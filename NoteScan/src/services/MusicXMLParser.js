@@ -4,12 +4,19 @@
  * Parses MusicXML returned by the HOMR server into the note/rest format
  * expected by AudioPlaybackService and PlaybackScreen.
  *
- * Output note format:
- *   { type, pitch, midiNote, duration, dotted, voice, staffIndex,
- *     systemIndex, measureIndex, accidental, tiedBeats }
+ * Key improvement: properly tracks beat position using MusicXML's
+ * <duration>, <backup>, <forward>, and <chord> elements so that
+ * notes that should play simultaneously (e.g. treble + bass) get
+ * the same beat offset.
  *
- * This is a lightweight XML parser that works in React Native without
- * any native XML dependencies — uses regex-based extraction.
+ * Output note format:
+ *   { type, pitch, midiNote, duration, durationBeats, dotted, voice,
+ *     staffIndex, systemIndex, measureIndex, accidental, tiedBeats,
+ *     beatOffset }
+ *
+ * `beatOffset` is the absolute beat position (in quarter-note beats)
+ * from the start of the piece. This drives correct audio timing —
+ * notes with the same beatOffset play together.
  */
 
 // Pitch name → semitone offset from C
@@ -24,16 +31,40 @@ const DURATION_TYPE_MAP = {
   '16th': 'sixteenth',
   '32nd': '32nd',
   '64th': '64th',
-  'breve': 'whole', // treat breve as whole
+  'breve': 'whole',
 };
 
-// Voice number → voice name
-const VOICE_NAMES = {
-  1: 'Soprano',
-  2: 'Alto',
-  3: 'Tenor',
-  4: 'Bass',
+// Duration name → beats (quarter-note beats)
+const DURATION_BEATS = {
+  'whole': 4, 'half': 2, 'quarter': 1, 'eighth': 0.5, 'sixteenth': 0.25,
+  '32nd': 0.125, '64th': 0.0625,
+  'dotted_whole': 6, 'dotted_half': 3, 'dotted_quarter': 1.5,
+  'dotted_eighth': 0.75, 'dotted_sixteenth': 0.375, 'dotted_32nd': 0.1875,
 };
+
+// Voice number → voice name (fallback when staff info is unavailable)
+const VOICE_NAMES = { 1: 'Soprano', 2: 'Alto', 3: 'Tenor', 4: 'Bass' };
+
+/**
+ * Map staff number + voice number → SATB voice name.
+ * For piano/grand staff: treble (staff 1) → Soprano/Alto,
+ *                        bass   (staff 2) → Tenor/Bass.
+ * For multi-part: uses the global staff index to determine position.
+ */
+function staffVoiceToSATB(staffNum, voiceNum, stavesInPart) {
+  if (stavesInPart >= 2) {
+    // Grand staff (piano, organ, etc.)
+    // Staff 1 (treble): voice 1→Soprano, voice 2→Alto
+    // Staff 2 (bass):   voice 1→Tenor,   voice 2→Bass
+    if (staffNum <= 1) {
+      return voiceNum <= 1 ? 'Soprano' : 'Alto';
+    } else {
+      return voiceNum <= 1 ? 'Tenor' : 'Bass';
+    }
+  }
+  // Single-staff part: use voice number directly
+  return VOICE_NAMES[voiceNum] || VOICE_NAMES[((voiceNum - 1) % 4) + 1];
+}
 
 export class MusicXMLParser {
   /**
@@ -54,140 +85,197 @@ export class MusicXMLParser {
     };
 
     // Extract title
-    const titleMatch = xml.match(/<movement-title>([^<]*)<\/movement-title>/);
+    const titleMatch = xml.match(/<work-title>([^<]*)<\/work-title>/) ||
+                       xml.match(/<movement-title>([^<]*)<\/movement-title>/);
     if (titleMatch) metadata.title = titleMatch[1].trim();
 
-    // Extract all parts
+    // Extract part IDs
     const partIds = [];
-    const partListMatches = xml.matchAll(/<score-part\s+id="([^"]+)"/g);
-    for (const m of partListMatches) {
+    for (const m of xml.matchAll(/<score-part\s+id="([^"]+)"/g)) {
       partIds.push(m[1]);
     }
-
     if (partIds.length === 0) {
-      // Fallback: find parts by <part id="..."> tag
-      const partMatches = xml.matchAll(/<part\s+id="([^"]+)"/g);
-      for (const m of partMatches) {
+      for (const m of xml.matchAll(/<part\s+id="([^"]+)"/g)) {
         if (!partIds.includes(m[1])) partIds.push(m[1]);
       }
     }
 
     // Parse each part
-    let globalStaffIndex = 0;
+    let globalStaffOffset = 0;
     let systemIndex = 0;
-    let highestStavesSeen = 0;
+    let globalBeatOffset = 0; // Absolute beat position across all measures
 
     for (let partIdx = 0; partIdx < partIds.length; partIdx++) {
       const partId = partIds[partIdx];
       const partRegex = new RegExp(
-        `<part\\s+id="${this._escapeRegex(partId)}"[^>]*>([\\s\\S]*?)<\\/part>`,
+        `<part\\s+id="${partId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"[^>]*>([\\s\\S]*?)<\\/part>`,
         'i'
       );
       const partMatch = xml.match(partRegex);
       if (!partMatch) continue;
-      const partContent = partMatch[1];
 
-      // Extract measures
-      const measures = this._extractMeasures(partContent);
+      const measures = this._extractMeasures(partMatch[1]);
 
-      // Track state
       let divisions = 1; // divisions per quarter note
-      let currentKey = { fifths: 0, mode: 'major' };
+      let currentKey = { fifths: 0 };
       let currentTime = { beats: 4, beatType: 4 };
       let currentClefs = {};
       let stavesInPart = 1;
       let measureIndex = -1;
+      globalBeatOffset = 0;
 
       for (const measureXml of measures) {
         measureIndex++;
 
-        // Check for new system (heuristic: every N measures or via print tag)
-        const newSystem = measureXml.match(/<print[^>]*new-system="yes"/);
-        const newPage = measureXml.match(/<print[^>]*new-page="yes"/);
-        if (measureIndex > 0 && (newSystem || newPage)) {
+        // Check for new system
+        if (measureIndex > 0 &&
+            (/<print[^>]*new-system="yes"/.test(measureXml) ||
+             /<print[^>]*new-page="yes"/.test(measureXml))) {
           systemIndex++;
         }
 
-        // Parse attributes (divisions, key, time, staves, clefs)
-        const attrMatch = measureXml.match(/<attributes>([\s\S]*?)<\/attributes>/);
-        if (attrMatch) {
-          const attr = attrMatch[1];
+        // Parse ALL <attributes> blocks in this measure (there can be multiple)
+        for (const attrM of measureXml.matchAll(/<attributes>([\s\S]*?)<\/attributes>/g)) {
+          const attr = attrM[1];
 
-          const divMatch = attr.match(/<divisions>(\d+)<\/divisions>/);
-          if (divMatch) divisions = parseInt(divMatch[1]);
+          const divM = attr.match(/<divisions>(\d+)<\/divisions>/);
+          if (divM) divisions = parseInt(divM[1]);
 
-          const keyMatch = attr.match(/<key>([\s\S]*?)<\/key>/);
-          if (keyMatch) {
-            const fifths = parseInt(keyMatch[1].match(/<fifths>(-?\d+)<\/fifths>/)?.[1] || '0');
-            const mode = keyMatch[1].match(/<mode>(\w+)<\/mode>/)?.[1] || 'major';
-            currentKey = { fifths, mode };
+          const keyM = attr.match(/<key>([\s\S]*?)<\/key>/);
+          if (keyM) {
+            const fifths = parseInt(keyM[1].match(/<fifths>(-?\d+)<\/fifths>/)?.[1] || '0');
+            currentKey = { fifths };
           }
 
-          const timeMatch = attr.match(/<time>([\s\S]*?)<\/time>/);
-          if (timeMatch) {
-            const beats = parseInt(timeMatch[1].match(/<beats>(\d+)<\/beats>/)?.[1] || '4');
-            const beatType = parseInt(timeMatch[1].match(/<beat-type>(\d+)<\/beat-type>/)?.[1] || '4');
+          const timeM = attr.match(/<time>([\s\S]*?)<\/time>/);
+          if (timeM) {
+            const beats = parseInt(timeM[1].match(/<beats>(\d+)<\/beats>/)?.[1] || '4');
+            const beatType = parseInt(timeM[1].match(/<beat-type>(\d+)<\/beat-type>/)?.[1] || '4');
             currentTime = { beats, beatType };
           }
 
-          const stavesMatch = attr.match(/<staves>(\d+)<\/staves>/);
-          if (stavesMatch) {
-            stavesInPart = parseInt(stavesMatch[1]);
-            highestStavesSeen = Math.max(highestStavesSeen, stavesInPart);
-          }
+          const stavesM = attr.match(/<staves>(\d+)<\/staves>/);
+          if (stavesM) stavesInPart = parseInt(stavesM[1]);
 
-          // Parse clefs
-          const clefMatches = [...attr.matchAll(/<clef[^>]*(?:number="(\d+)")?[^>]*>([\s\S]*?)<\/clef>/g)];
-          for (const cm of clefMatches) {
+          for (const cm of attr.matchAll(/<clef[^>]*(?:number="(\d+)")?[^>]*>([\s\S]*?)<\/clef>/g)) {
             const clefNum = cm[1] ? parseInt(cm[1]) : 1;
             const sign = cm[2].match(/<sign>(\w)<\/sign>/)?.[1] || 'G';
-            const line = parseInt(cm[2].match(/<line>(\d)<\/line>/)?.[1] || '2');
-            const clefName = sign === 'G' ? 'treble' : sign === 'F' ? 'bass' : sign === 'C' ? 'alto' : 'treble';
-            currentClefs[clefNum] = clefName;
+            currentClefs[clefNum] = sign === 'G' ? 'treble' : sign === 'F' ? 'bass' : sign === 'C' ? 'alto' : 'treble';
+            // Auto-detect stavesInPart from clef numbers (HOMR often omits <staves>)
+            if (clefNum > stavesInPart) stavesInPart = clefNum;
+          }
+
+          // Also auto-detect from staff numbers used in this measure's notes
+          for (const sm of measureXml.matchAll(/<staff>(\d+)<\/staff>/g)) {
+            const sn = parseInt(sm[1]);
+            if (sn > stavesInPart) stavesInPart = sn;
           }
         }
 
-        // Parse notes and rests in this measure
-        const noteMatches = [...measureXml.matchAll(/<note[^>]*>([\s\S]*?)<\/note>/g)];
-        let isChord = false;
+        // ─── Parse note/rest/backup/forward events IN DOCUMENT ORDER ───
+        // Track beat position PER VOICE within the measure.
+        // HOMR often interleaves staves without <backup> elements,
+        // so when a note switches to a different voice/staff, we must
+        // track each voice independently to avoid treating concurrent
+        // notes as sequential.
+        const measureStartBeat = globalBeatOffset;
 
-        for (const nm of noteMatches) {
-          const noteXml = nm[1];
+        // voiceBeatPos: Map<"staff_voice" → current beat position in measure>
+        const voiceBeatPos = new Map();
+        // "active" voice key — tracks which voice the linear position belongs to
+        let activeVoiceKey = null;
+        // Fallback linear position (used for backup/forward which are voice-independent)
+        let linearBeatPos = 0;
 
-          // Check if this is a chord member (don't advance position)
-          isChord = /<chord\s*\/>/.test(noteXml);
+        const getVoiceKey = (staffNum, voiceNum) => `${staffNum}_${voiceNum}`;
 
-          // Get staff number (default 1)
-          const staffNum = parseInt(noteXml.match(/<staff>(\d+)<\/staff>/)?.[1] || '1');
-          const staffIdx = globalStaffIndex + staffNum - 1;
+        // Match all relevant elements in document order
+        const eventRegex = /<(note|backup|forward)\b[^>]*>([\s\S]*?)<\/\1>/g;
+        let em;
+        while ((em = eventRegex.exec(measureXml)) !== null) {
+          const tag = em[1];
+          const content = em[2];
 
-          // Get voice
-          const voiceNum = parseInt(noteXml.match(/<voice>(\d+)<\/voice>/)?.[1] || '1');
-          const voiceName = VOICE_NAMES[voiceNum] || VOICE_NAMES[((voiceNum - 1) % 4) + 1];
+          if (tag === 'backup') {
+            const durDivs = parseInt(content.match(/<duration>(\d+)<\/duration>/)?.[1] || '0');
+            const beats = durDivs / divisions;
+            linearBeatPos -= beats;
+            if (linearBeatPos < 0) linearBeatPos = 0;
+            // Reset active voice — next note determines the voice
+            activeVoiceKey = null;
+            continue;
+          }
 
-          // Get duration in divisions
+          if (tag === 'forward') {
+            const durDivs = parseInt(content.match(/<duration>(\d+)<\/duration>/)?.[1] || '0');
+            const beats = durDivs / divisions;
+            linearBeatPos += beats;
+            // Update active voice if set
+            if (activeVoiceKey && voiceBeatPos.has(activeVoiceKey)) {
+              voiceBeatPos.set(activeVoiceKey, voiceBeatPos.get(activeVoiceKey) + beats);
+            }
+            continue;
+          }
+
+          // It's a <note>
+          const noteXml = content;
+          const isChord = /<chord\s*\/>/.test(noteXml);
+          const isRest = /<rest\s*\/>/.test(noteXml) || /<rest>/.test(noteXml);
+
+          // Duration in divisions → quarter-note beats
           const durationDivs = parseInt(noteXml.match(/<duration>(\d+)<\/duration>/)?.[1] || String(divisions));
+          const durationBeats = durationDivs / divisions;
 
-          // Get type (quarter, half, etc.)
+          // Type name
           const typeStr = noteXml.match(/<type>([^<]+)<\/type>/)?.[1] || '';
-          const duration = DURATION_TYPE_MAP[typeStr] || this._divisionsToType(durationDivs, divisions);
+          const durName = DURATION_TYPE_MAP[typeStr] || this._beatsToType(durationBeats);
 
           // Dotted?
           const dotted = /<dot\s*\/>/.test(noteXml);
+          const fullDurName = dotted ? `dotted_${durName}` : durName;
 
-          // Tied?
+          // Staff and voice
+          const staffNum = parseInt(noteXml.match(/<staff>(\d+)<\/staff>/)?.[1] || '1');
+          const staffIdx = globalStaffOffset + staffNum - 1;
+          const voiceNum = parseInt(noteXml.match(/<voice>(\d+)<\/voice>/)?.[1] || '1');
+          const voiceName = staffVoiceToSATB(staffNum, voiceNum, stavesInPart);
+          const vKey = getVoiceKey(staffNum, voiceNum);
+
+          // Initialize voice position on first encounter
+          if (!voiceBeatPos.has(vKey)) {
+            // Each voice/staff starts at the BEGINNING of the measure (beat 0).
+            // HOMR interleaves notes from different staves without <backup>
+            // elements, so we can't use the linear (cumulative) position.
+            // For proper MusicXML with <backup>, the backup resets
+            // linearBeatPos to 0 anyway, so starting at 0 is correct either way.
+            voiceBeatPos.set(vKey, 0);
+          }
+
+          activeVoiceKey = vKey;
+
+          // Get this voice's current beat position
+          let voicePos = voiceBeatPos.get(vKey);
+
+          // Compute beat offset for this note
+          let noteBeatOffset;
+          if (isChord) {
+            // Chord: same onset as previous note in this voice
+            noteBeatOffset = measureStartBeat + Math.max(0, voicePos - durationBeats);
+          } else {
+            noteBeatOffset = measureStartBeat + voicePos;
+          }
+
+          // Ties
           const tieStart = /<tie\s+type="start"\s*\/>/.test(noteXml);
           const tieStop = /<tie\s+type="stop"\s*\/>/.test(noteXml);
-
-          // Is it a rest?
-          const isRest = /<rest\s*\/>/.test(noteXml) || /<rest>/.test(noteXml);
 
           if (isRest) {
             notes.push({
               type: 'rest',
               pitch: null,
               midiNote: null,
-              duration: dotted ? `dotted_${duration}` : duration,
+              duration: fullDurName,
+              durationBeats,
               dotted,
               voice: voiceName,
               staffIndex: staffIdx,
@@ -195,6 +283,7 @@ export class MusicXMLParser {
               measureIndex,
               accidental: null,
               tiedBeats: null,
+              beatOffset: noteBeatOffset,
             });
           } else {
             // Parse pitch
@@ -204,25 +293,23 @@ export class MusicXMLParser {
               const step = pitchXml.match(/<step>([A-G])<\/step>/)?.[1] || 'C';
               const octave = parseInt(pitchXml.match(/<octave>(\d+)<\/octave>/)?.[1] || '4');
               const alter = parseInt(pitchXml.match(/<alter>(-?\d+)<\/alter>/)?.[1] || '0');
-
               const midiNote = this._pitchToMidi(step, octave, alter);
               const pitchName = `${step}${alter > 0 ? '#' : alter < 0 ? 'b' : ''}${octave}`;
 
               let accidental = null;
               const accMatch = noteXml.match(/<accidental>([^<]+)<\/accidental>/);
               if (accMatch) {
-                const accType = accMatch[1];
-                accidental = accType === 'sharp' ? 'sharp'
-                  : accType === 'flat' ? 'flat'
-                  : accType === 'natural' ? 'natural'
-                  : null;
+                accidental = accMatch[1] === 'sharp' ? 'sharp'
+                  : accMatch[1] === 'flat' ? 'flat'
+                  : accMatch[1] === 'natural' ? 'natural' : null;
               }
 
               notes.push({
                 type: 'note',
                 pitch: pitchName,
                 midiNote,
-                duration: dotted ? `dotted_${duration}` : duration,
+                duration: fullDurName,
+                durationBeats,
                 dotted,
                 voice: voiceName,
                 staffIndex: staffIdx,
@@ -230,18 +317,44 @@ export class MusicXMLParser {
                 measureIndex,
                 accidental,
                 tiedBeats: null,
+                beatOffset: noteBeatOffset,
                 _tieStart: tieStart,
                 _tieStop: tieStop,
               });
             }
           }
+
+          // Advance this voice's beat position (only for non-chord notes)
+          if (!isChord) {
+            voiceBeatPos.set(vKey, voicePos + durationBeats);
+            // Also update linear position to track the furthest point
+            linearBeatPos = Math.max(linearBeatPos, voiceBeatPos.get(vKey));
+          }
         }
+
+        // Advance global beat offset by this measure's duration.
+        // Pickup/anacrusis detection: if the first measure has less content
+        // than the time signature suggests, use the actual content duration
+        // to avoid a large silence gap at the start.
+        const theoreticalBeats = currentTime.beats * (4 / currentTime.beatType);
+        const maxVoicePos = voiceBeatPos.size > 0
+          ? Math.max(...voiceBeatPos.values())
+          : 0;
+        let measureBeats;
+        if (measureIndex === 0 && maxVoicePos > 0 && maxVoicePos < theoreticalBeats) {
+          // Pickup measure — use actual content duration
+          measureBeats = maxVoicePos;
+        } else {
+          // Normal measure — use theoretical, or actual if content overflows
+          measureBeats = Math.max(theoreticalBeats, maxVoicePos);
+        }
+        globalBeatOffset += measureBeats;
       }
 
-      // Update global staff index for next part
-      globalStaffIndex += stavesInPart;
+      // Update global staff offset for next part
+      globalStaffOffset += stavesInPart;
 
-      // Update metadata from this part
+      // Update metadata
       if (metadata.clefs.length === 0) {
         for (const [, clef] of Object.entries(currentClefs)) {
           metadata.clefs.push(clef);
@@ -251,18 +364,91 @@ export class MusicXMLParser {
       metadata.keySignature = this._fifthsToKey(currentKey.fifths);
     }
 
-    // Resolve ties: merge tied notes into single notes with extended duration
+    // Resolve ties
     this._resolveTies(notes);
 
-    // Calculate systems (minimum 1)
     metadata.systems = Math.max(1, systemIndex + 1);
-    metadata.staves = globalStaffIndex;
-    metadata.stavesPerSystem = highestStavesSeen || (globalStaffIndex > 0 ? globalStaffIndex / metadata.systems : 2);
+    metadata.staves = globalStaffOffset;
+    metadata.stavesPerSystem = globalStaffOffset > 0
+      ? Math.max(1, Math.round(globalStaffOffset / metadata.systems))
+      : 2;
+    metadata.totalBeats = globalBeatOffset;
+
+    const noteCount = notes.filter(n => n.type === 'note').length;
+    const restCount = notes.filter(n => n.type === 'rest').length;
+    metadata.totalRests = restCount;
+
+    // Count per-voice for diagnostics
+    const voiceCounts = {};
+    for (const n of notes) {
+      if (n.type === 'note') voiceCounts[n.voice] = (voiceCounts[n.voice] || 0) + 1;
+    }
+    metadata.voiceCounts = voiceCounts;
+
+    // Note range (lowest / highest MIDI and pitch names)
+    const realNotes = notes.filter(n => n.type === 'note' && n.midiNote != null);
+    if (realNotes.length > 0) {
+      const sorted = [...realNotes].sort((a, b) => a.midiNote - b.midiNote);
+      metadata.noteRange = {
+        low: { midi: sorted[0].midiNote, pitch: sorted[0].pitch },
+        high: { midi: sorted[sorted.length - 1].midiNote, pitch: sorted[sorted.length - 1].pitch },
+      };
+    }
+
+    // Measure info: total count + array of beat boundaries for progress bar
+    metadata.totalMeasures = 0;
+    metadata.measureBeats = []; // [{ measureNum, startBeat, endBeat, beats, beatType }]
+
+    // Re-derive from the part(s) - walk first part's measures to build boundaries
+    if (partIds.length > 0) {
+      const firstPartId = partIds[0];
+      const firstPartRegex = new RegExp(
+        `<part\\s+id="${firstPartId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"[^>]*>([\\s\\S]*?)<\\/part>`,
+        'i'
+      );
+      const firstPartMatch = xml.match(firstPartRegex);
+      if (firstPartMatch) {
+        const measures = this._extractMeasures(firstPartMatch[1]);
+        let mDivisions = 1;
+        let mTime = { beats: 4, beatType: 4 };
+        let mBeatOffset = 0;
+
+        for (let mi = 0; mi < measures.length; mi++) {
+          const mXml = measures[mi];
+          // Check for attributes in this measure
+          for (const attrM of mXml.matchAll(/<attributes>([\s\S]*?)<\/attributes>/g)) {
+            const attr = attrM[1];
+            const divM = attr.match(/<divisions>(\d+)<\/divisions>/);
+            if (divM) mDivisions = parseInt(divM[1]);
+            const timeM = attr.match(/<time>([\s\S]*?)<\/time>/);
+            if (timeM) {
+              mTime = {
+                beats: parseInt(timeM[1].match(/<beats>(\d+)<\/beats>/)?.[1] || '4'),
+                beatType: parseInt(timeM[1].match(/<beat-type>(\d+)<\/beat-type>/)?.[1] || '4'),
+              };
+            }
+          }
+          const measureBeats = mTime.beats * (4 / mTime.beatType);
+          const num = parseInt(mXml.match(/<measure[^>]*number="(\d+)"/)?.[1] || String(mi + 1));
+          metadata.measureBeats.push({
+            measureNum: num,
+            startBeat: mBeatOffset,
+            endBeat: mBeatOffset + measureBeats,
+            beats: mTime.beats,
+            beatType: mTime.beatType,
+          });
+          mBeatOffset += measureBeats;
+        }
+        metadata.totalMeasures = measures.length;
+      }
+    }
 
     console.log(
-      `✅ Parsed MusicXML: ${notes.filter(n => n.type === 'note').length} notes, ` +
-      `${notes.filter(n => n.type === 'rest').length} rests, ` +
-      `${metadata.staves} staves, ${metadata.systems} systems`
+      `✅ Parsed MusicXML: ${noteCount} notes, ${restCount} rests, ` +
+      `${metadata.staves} staves, ${metadata.systems} systems, ` +
+      `${metadata.totalMeasures} measures, ${globalBeatOffset} total beats\n` +
+      `   Voice distribution: ${Object.entries(voiceCounts).map(([v,c]) => `${v}=${c}`).join(', ')}` +
+      (metadata.noteRange ? `\n   Range: ${metadata.noteRange.low.pitch} – ${metadata.noteRange.high.pitch}` : '')
     );
 
     return { notes, metadata };
@@ -275,50 +461,34 @@ export class MusicXMLParser {
     const regex = /<measure[^>]*>([\s\S]*?)<\/measure>/g;
     let match;
     while ((match = regex.exec(partXml)) !== null) {
-      measures.push(match[0]); // include the <measure> tags
+      measures.push(match[0]);
     }
     return measures;
   }
 
   static _pitchToMidi(step, octave, alter) {
-    const semitone = PITCH_SEMITONES[step] || 0;
-    return 12 * (octave + 1) + semitone + alter;
+    return 12 * (octave + 1) + (PITCH_SEMITONES[step] || 0) + alter;
   }
 
-  static _divisionsToType(durationDivs, divisions) {
-    // divisions = divisions per quarter note
-    const ratio = durationDivs / divisions;
-    if (ratio >= 4) return 'whole';
-    if (ratio >= 2) return 'half';
-    if (ratio >= 1) return 'quarter';
-    if (ratio >= 0.5) return 'eighth';
-    if (ratio >= 0.25) return 'sixteenth';
+  static _beatsToType(beats) {
+    if (beats >= 4) return 'whole';
+    if (beats >= 2) return 'half';
+    if (beats >= 1) return 'quarter';
+    if (beats >= 0.5) return 'eighth';
+    if (beats >= 0.25) return 'sixteenth';
     return '32nd';
   }
 
   static _fifthsToKey(fifths) {
-    if (fifths === 0) return { type: 'None', count: 0 };
-    if (fifths > 0) return { type: 'Sharps', count: fifths };
-    return { type: 'Flats', count: Math.abs(fifths) };
-  }
-
-  static _escapeRegex(str) {
-    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (fifths === 0) return { type: 'None', count: 0, fifths: 0 };
+    if (fifths > 0) return { type: 'Sharps', count: fifths, fifths };
+    return { type: 'Flats', count: Math.abs(fifths), fifths };
   }
 
   /**
    * Resolve ties by merging consecutive tied notes of the same pitch.
-   * Modifies the notes array in place.
    */
   static _resolveTies(notes) {
-    const DURATION_BEATS = {
-      'whole': 4, 'half': 2, 'quarter': 1, 'eighth': 0.5, 'sixteenth': 0.25,
-      '32nd': 0.125,
-      'dotted_whole': 6, 'dotted_half': 3, 'dotted_quarter': 1.5,
-      'dotted_eighth': 0.75, 'dotted_sixteenth': 0.375, 'dotted_32nd': 0.1875,
-    };
-
-    // Track open ties: key = `${staffIndex}_${voice}_${midiNote}` → index in notes array
     const openTies = new Map();
 
     for (let i = 0; i < notes.length; i++) {
@@ -328,19 +498,15 @@ export class MusicXMLParser {
       const key = `${note.staffIndex}_${note.voice}_${note.midiNote}`;
 
       if (note._tieStop && openTies.has(key)) {
-        // This note is the continuation of a tie — merge into the starter
         const startIdx = openTies.get(key);
         const starter = notes[startIdx];
-        const startBeats = starter.tiedBeats || DURATION_BEATS[starter.duration] || 1;
-        const addBeats = DURATION_BEATS[note.duration] || 1;
+        const startBeats = starter.tiedBeats || starter.durationBeats || DURATION_BEATS[starter.duration] || 1;
+        const addBeats = note.durationBeats || DURATION_BEATS[note.duration] || 1;
         starter.tiedBeats = startBeats + addBeats;
-
-        // Mark this continuation note for removal
         note._remove = true;
 
-        // If the continuation also starts a new tie, keep tracking
         if (note._tieStart) {
-          openTies.set(key, startIdx); // keep pointing to original
+          openTies.set(key, startIdx);
         } else {
           openTies.delete(key);
         }
@@ -351,7 +517,6 @@ export class MusicXMLParser {
       }
     }
 
-    // Remove merged continuation notes and clean up internal fields
     for (let i = notes.length - 1; i >= 0; i--) {
       if (notes[i]._remove) {
         notes.splice(i, 1);

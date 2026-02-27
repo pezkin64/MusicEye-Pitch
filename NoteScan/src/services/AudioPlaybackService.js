@@ -197,19 +197,17 @@ export class AudioPlaybackService {
   /**
    * Build a single WAV containing all notes with correct timestamps.
    *
-   * Playback always goes **left to right** by x-position.  Notes at the
-   * same x-position (within 8 px) are simultaneous — all voices sound
-   * together at that beat.  Each individual note renders with its own
-   * duration so that, e.g., a Soprano half-note and an Alto quarter-note
-   * produce the correct lengths.  The cursor advances by the **minimum**
-   * note duration at that position so the next beat event fires on time.
+   * Uses `beatOffset` (set by MusicXMLParser) to place each note at
+   * its exact rhythmic position. Notes sharing the same beatOffset
+   * play simultaneously — this correctly handles chords, multi-staff
+   * writing, and backup elements in MusicXML.
    *
-   * Voice filtering is done by the caller — only the notes passed in
-   * will be heard.
+   * Falls back to the old x-position-based grouping only when no
+   * beatOffset data is present (legacy OMR path).
    *
-   * @param {Array} notes - voiced notes/rests with midiNote, duration, x, y, staffIndex, voice
+   * @param {Array} notes - notes/rests with midiNote, duration, beatOffset, x, y, staffIndex, voice
    * @param {number} tempo - BPM
-   * @param {Array} [systemsMetadata] - OMR-detected systems: [{ staffIndices: [0,1], ... }]
+   * @param {Array} [systemsMetadata] - OMR-detected systems
    * @returns {Promise<{ fileUri: string, timingMap: Array, totalDuration: number }>}
    */
   static async createCombinedAudio(notes, tempo = 120, systemsMetadata = null) {
@@ -226,6 +224,136 @@ export class AudioPlaybackService {
       return { fileUri: '', timingMap: [], totalDuration: 0 };
     }
 
+    // Check if beatOffset data is available (set by the new MusicXMLParser)
+    const hasBeatOffset = notes.some(n => typeof n.beatOffset === 'number' && Number.isFinite(n.beatOffset));
+
+    if (!hasBeatOffset) {
+      // Legacy path: use x-position grouping (old behavior)
+      return this._createCombinedAudioLegacy(notes, tempo, systemsMetadata);
+    }
+
+    // ── Beat-offset-based rendering (new, correct path) ──
+
+    const getBeats = (n) => n.tiedBeats || n.durationBeats || durationMap[n.duration] || 1;
+
+    // Filter to actual notes (not rests) and sort by beatOffset
+    const realNotes = notes.filter(n => n.type !== 'rest' && n.midiNote != null);
+
+    // ── Diagnostic: log first 20 notes ──
+    const preview = realNotes.slice(0, 20).map(n =>
+      `${n.pitch || '?'}@${n.beatOffset?.toFixed(1)}(${n.duration || '?'})`
+    ).join(' ');
+    console.log(`🎵 First notes: ${preview}`);
+
+    // Group notes by beatOffset (notes with same beatOffset play together)
+    const beatMap = new Map(); // beatOffset → [note, ...]
+    for (const n of realNotes) {
+      const bo = Math.round(n.beatOffset * 1000) / 1000; // round to avoid float issues
+      if (!beatMap.has(bo)) beatMap.set(bo, []);
+      beatMap.get(bo).push(n);
+    }
+
+    // Sort beat positions chronologically
+    const beatPositions = [...beatMap.keys()].sort((a, b) => a - b);
+
+    // Build timing map and chord metadata
+    const timingMap = [];
+    const chordMeta = []; // { offsetSamples, notes: [{midiNote, dur}] }
+
+    for (const bo of beatPositions) {
+      const group = beatMap.get(bo);
+      const time = bo * secondsPerBeat;
+
+      // Average x/y for cursor
+      const avgX = group.reduce((s, n) => s + (n.x || 0), 0) / group.length;
+      const avgY = group.reduce((s, n) => s + (n.y || 0), 0) / group.length;
+      const si = group[0].staffIndex;
+
+      timingMap.push({
+        time, x: avgX, y: avgY, staffIndex: si, isRest: false,
+      });
+
+      const noteEntries = group.map(n => ({
+        midiNote: n.midiNote ?? 60,
+        dur: getBeats(n) * secondsPerBeat,
+      }));
+
+      chordMeta.push({
+        offsetSamples: Math.floor(time * sampleRate),
+        notes: noteEntries,
+      });
+    }
+
+    // Also include rests in the timing map for cursor tracking
+    const rests = notes.filter(n => n.type === 'rest' && typeof n.beatOffset === 'number');
+    for (const r of rests) {
+      const time = r.beatOffset * secondsPerBeat;
+      // Only add if no note event exists at this time
+      if (!beatMap.has(Math.round(r.beatOffset * 1000) / 1000)) {
+        timingMap.push({
+          time, x: r.x || 0, y: r.y || 0, staffIndex: r.staffIndex, isRest: true,
+        });
+      }
+    }
+
+    // Sort timing map by time
+    timingMap.sort((a, b) => a.time - b.time);
+
+    // Compute total duration
+    let globalTime = 0;
+    if (beatPositions.length > 0) {
+      const lastBeat = beatPositions[beatPositions.length - 1];
+      const lastGroup = beatMap.get(lastBeat);
+      const maxBeats = Math.max(...lastGroup.map(getBeats));
+      globalTime = (lastBeat + maxBeats) * secondsPerBeat;
+    }
+
+    // Build master buffer
+    const tailSec = 0.3;
+    const totalSamples = Math.floor((globalTime + tailSec) * sampleRate);
+    const master = new Float32Array(totalSamples);
+
+    for (const meta of chordMeta) {
+      for (const n of meta.notes) {
+        const noteAudio = this.generatePianoNote(n.midiNote, n.dur);
+        const start = meta.offsetSamples;
+        const len = Math.min(noteAudio.length, totalSamples - start);
+        for (let i = 0; i < len; i++) master[start + i] += noteAudio[i];
+      }
+    }
+
+    // Sanitize and normalize
+    for (let i = 0; i < master.length; i++) {
+      if (!Number.isFinite(master[i])) master[i] = 0;
+    }
+    let masterPeak = 0;
+    for (let i = 0; i < master.length; i++) masterPeak = Math.max(masterPeak, Math.abs(master[i]));
+    if (masterPeak > 1) for (let i = 0; i < master.length; i++) master[i] /= masterPeak;
+
+    const fileUri = await this.writeWavToFile(master);
+
+    const source = this._soundFontReady ? 'SoundFont' : 'synthesis';
+    console.log(
+      `🎹 Combined audio (${source}, beat-offset): ${globalTime.toFixed(1)}s, ` +
+      `${timingMap.length} timing points, ${chordMeta.length} beat events`
+    );
+
+    return { fileUri, timingMap, totalDuration: globalTime };
+  }
+
+  /**
+   * Legacy x-position-based audio generation (fallback when beatOffset is unavailable).
+   */
+  static async _createCombinedAudioLegacy(notes, tempo = 120, systemsMetadata = null) {
+    const sampleRate = 44100;
+    const secondsPerBeat = 60 / tempo;
+    const durationMap = {
+      whole: 4, half: 2, quarter: 1, eighth: 0.5, sixteenth: 0.25,
+      '32nd': 0.125,
+      dotted_whole: 6, dotted_half: 3, dotted_quarter: 1.5,
+      dotted_eighth: 0.75, dotted_sixteenth: 0.375, dotted_32nd: 0.1875,
+    };
+
     // Sort notes: first by staff system, then x position
     const sorted = [...notes].sort((a, b) => {
       const sa = Number.isFinite(a.staffIndex) ? a.staffIndex : 999;
@@ -234,34 +362,22 @@ export class AudioPlaybackService {
       return (a.x || 0) - (b.x || 0);
     });
 
-    // Build system mapping using OMR-detected systems when available.
+    // Build system mapping
     const staffToSystem = new Map();
     if (systemsMetadata && systemsMetadata.length > 0) {
       systemsMetadata.forEach((sys, idx) => {
-        for (const si of sys.staffIndices) {
-          staffToSystem.set(si, idx);
-        }
+        for (const si of sys.staffIndices) staffToSystem.set(si, idx);
       });
     } else {
-      // Fallback: pair adjacent staves into systems (grand staff pairs).
-      // This handles the case where systemsMetadata is not available.
-      // Without metadata, assume consecutive staves form grand staff pairs
-      // (treble + bass), which is the overwhelmingly common case in hymns,
-      // piano music, and choral scores.
-      const staffIndices = [...new Set(sorted.map((n) => n.staffIndex).filter(Number.isFinite))].sort(
-        (a, b) => a - b
-      );
+      const staffIndices = [...new Set(sorted.map(n => n.staffIndex).filter(Number.isFinite))].sort((a, b) => a - b);
       let sysIdx = 0;
       for (let j = 0; j < staffIndices.length; j += 2) {
         staffToSystem.set(staffIndices[j], sysIdx);
-        if (j + 1 < staffIndices.length) {
-          staffToSystem.set(staffIndices[j + 1], sysIdx);
-        }
+        if (j + 1 < staffIndices.length) staffToSystem.set(staffIndices[j + 1], sysIdx);
         sysIdx++;
       }
     }
 
-    // Group notes by system
     const systemNotes = new Map();
     for (const note of sorted) {
       const sys = staffToSystem.get(note.staffIndex) ?? 0;
@@ -269,41 +385,18 @@ export class AudioPlaybackService {
       systemNotes.get(sys).push(note);
     }
 
-    // ------------------------------------------------------------------
-    //  Systems play sequentially.  Within each system, events are laid
-    //  out strictly left-to-right.  Notes at the same x (within 8 px)
-    //  are grouped into a "beat column" — they all start at the same
-    //  time.  Each note keeps its own duration for audio generation.
-    //  The column's advance time = the minimum duration, so the cursor
-    //  moves to the next beat column when the shortest note finishes.
-    // ------------------------------------------------------------------
     const timingMap = [];
-    const chordMeta = []; // { offsetSamples, notes:[{midiNote, dur}] }
+    const chordMeta = [];
     let globalTime = 0;
 
     const systems = [...systemNotes.entries()].sort((a, b) => a[0] - b[0]);
 
-    // ── Diagnostic: log first 20 notes for debugging pitch/duration accuracy ──
-    const allSorted = [...notes].filter(n => n.type !== 'rest').sort((a, b) => {
-      if (a.staffIndex !== b.staffIndex) return a.staffIndex - b.staffIndex;
-      return (a.x || 0) - (b.x || 0);
-    });
-    const preview = allSorted.slice(0, 20).map(n =>
-      `${n.pitch || '?'}${n.midiNote || '?'}(${n.duration || '?'}${n.voice ? ' ' + n.voice[0] : ''})`
-    ).join(' ');
-    console.log(`🎵 First notes: ${preview}`);
-
     for (const [, sysNotes] of systems) {
-      // Sort by x position (left to right)
       sysNotes.sort((a, b) => (a.x || 0) - (b.x || 0));
 
-      // Group into beat columns (events at the same rhythmic position).
-      // Use a dynamic threshold proportional to the typical note spacing
-      // instead of a fixed 8px — notes on treble vs bass staves at the
-      // same beat can differ by 10-20px depending on image resolution.
       const xPositions = sysNotes.map(n => n.x || 0);
       const uniqueX = [...new Set(xPositions)].sort((a, b) => a - b);
-      let colThreshold = 15; // default
+      let colThreshold = 15;
       if (uniqueX.length > 2) {
         const gaps = [];
         for (let g = 1; g < uniqueX.length; g++) {
@@ -313,8 +406,6 @@ export class AudioPlaybackService {
         if (gaps.length > 0) {
           gaps.sort((a, b) => a - b);
           const medianGap = gaps[Math.floor(gaps.length / 2)];
-          // Column threshold = 40% of median gap between distinct x-positions
-          // This groups notes at the same beat while separating consecutive beats
           colThreshold = Math.max(10, Math.min(30, Math.floor(medianGap * 0.4)));
         }
       }
@@ -334,52 +425,34 @@ export class AudioPlaybackService {
       columns.push(col);
 
       for (const col of columns) {
-        // Separate actual notes from rests
         const realNotes = col.filter(n => n.type !== 'rest');
         const isAllRests = realNotes.length === 0;
-
-        // Each event has its own beat-duration
-        const getBeats = (n) => n.tiedBeats || durationMap[n.duration] || 1;
-
-        // Advance time = minimum duration in this column
-        // (this is when the next beat column should start)
+        const getBeats = (n) => n.tiedBeats || n.durationBeats || durationMap[n.duration] || 1;
         const minBeats = Math.min(...col.map(getBeats));
         const advanceDuration = minBeats * secondsPerBeat;
-
-        // Average position for cursor placement
         const avgX = col.reduce((s, n) => s + (n.x || 0), 0) / col.length;
         const avgY = col.reduce((s, n) => s + (n.y || 0), 0) / col.length;
         const si = col[0].staffIndex;
 
-        timingMap.push({
-          time: globalTime, x: avgX, y: avgY, staffIndex: si, isRest: isAllRests,
-        });
+        timingMap.push({ time: globalTime, x: avgX, y: avgY, staffIndex: si, isRest: isAllRests });
 
         if (!isAllRests) {
-          // Generate audio for each note with its OWN duration
           const noteEntries = realNotes.map(n => ({
             midiNote: n.midiNote ?? 60,
             dur: getBeats(n) * secondsPerBeat,
           }));
-          chordMeta.push({
-            offsetSamples: Math.floor(globalTime * sampleRate),
-            notes: noteEntries,
-          });
+          chordMeta.push({ offsetSamples: Math.floor(globalTime * sampleRate), notes: noteEntries });
         }
-
         globalTime += advanceDuration;
       }
     }
 
-    // Build master buffer — generate audio per chord and mix directly
-    // (avoids keeping all intermediate Float32Arrays alive simultaneously)
     const tailSec = 0.3;
     const totalSamples = Math.floor((globalTime + tailSec) * sampleRate);
     const master = new Float32Array(totalSamples);
 
     for (const meta of chordMeta) {
       for (const n of meta.notes) {
-        // Each note renders with its own duration
         const noteAudio = this.generatePianoNote(n.midiNote, n.dur);
         const start = meta.offsetSamples;
         const len = Math.min(noteAudio.length, totalSamples - start);
@@ -387,7 +460,6 @@ export class AudioPlaybackService {
       }
     }
 
-    // Sanitize: replace any NaN / Infinity with 0, then normalize
     for (let i = 0; i < master.length; i++) {
       if (!Number.isFinite(master[i])) master[i] = 0;
     }
@@ -395,14 +467,8 @@ export class AudioPlaybackService {
     for (let i = 0; i < master.length; i++) masterPeak = Math.max(masterPeak, Math.abs(master[i]));
     if (masterPeak > 1) for (let i = 0; i < master.length; i++) master[i] /= masterPeak;
 
-    // Write to temp file instead of keeping a huge data URL string in memory
     const fileUri = await this.writeWavToFile(master);
-
-    const source = this._soundFontReady ? 'SoundFont' : 'synthesis';
-    console.log(
-      `🎹 Combined audio (${source}): ${globalTime.toFixed(1)}s, ${timingMap.length} timing points`
-    );
-
+    console.log(`🎹 Combined audio (legacy x-pos): ${globalTime.toFixed(1)}s, ${timingMap.length} timing points`);
     return { fileUri, timingMap, totalDuration: globalTime };
   }
 
@@ -426,13 +492,29 @@ export class AudioPlaybackService {
    */
   static async play(fileUri, onPositionUpdate, onFinished) {
     await this.stop();
+
+    if (!fileUri) {
+      console.error('▶️ play() called with empty fileUri');
+      if (onFinished) onFinished();
+      return;
+    }
+
     this._tempFileUri = fileUri;
+    console.log(`▶️ play(): loading ${fileUri}`);
 
     try {
-      const { sound } = await Audio.Sound.createAsync(
+      const { sound, status: initialStatus } = await Audio.Sound.createAsync(
         { uri: fileUri },
         { shouldPlay: true, progressUpdateIntervalMillis: 50 }
       );
+
+      console.log(`▶️ play(): sound created, duration=${initialStatus.durationMillis}ms, isPlaying=${initialStatus.isPlaying}`);
+
+      if (!initialStatus.isLoaded) {
+        console.error('▶️ play(): sound not loaded after createAsync');
+        if (onFinished) onFinished();
+        return;
+      }
 
       this.sound = sound;
       this.isPlaying = true;
@@ -450,7 +532,7 @@ export class AudioPlaybackService {
         }
       });
     } catch (err) {
-      console.error('Play error:', err);
+      console.error('▶️ play() error:', err);
       this.isPlaying = false;
       if (onFinished) onFinished();
     }

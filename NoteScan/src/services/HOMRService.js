@@ -7,14 +7,39 @@
  * HOMR API:  POST /process  (multipart/form-data with file field)
  *            Returns: MusicXML file
  */
-import * as FileSystem from 'expo-file-system';
+import { File, Paths } from 'expo-file-system';
+import Constants from 'expo-constants';
 import { MusicXMLParser } from './MusicXMLParser';
 
-// Default HOMR server URL — user can change in settings
-const DEFAULT_SERVER_URL = 'http://localhost:8080';
+// Auto-detect the Expo dev server URL so we can proxy through the tunnel.
+// The Metro config proxies /process to the local HOMR server.
+function getDefaultServerUrl() {
+  try {
+    // In Expo Go, the manifest has the dev server URL (including tunnel)
+    const debuggerHost =
+      Constants.expoConfig?.hostUri ||
+      Constants.manifest?.debuggerHost ||
+      Constants.manifest2?.extra?.expoGo?.debuggerHost;
+    if (debuggerHost) {
+      // Tunnel URLs (e.g. xxx.exp.direct) are HTTPS on default port
+      // LAN URLs (e.g. 192.168.1.5:8081) are HTTP with explicit port
+      if (debuggerHost.includes('.exp.direct') || debuggerHost.includes('ngrok') || debuggerHost.includes('tunnel')) {
+        const host = debuggerHost.split(':')[0];
+        return `https://${host}`;
+      }
+      // LAN mode — use http with the port
+      const host = debuggerHost.split(':')[0];
+      const port = debuggerHost.split(':')[1] || '8081';
+      return `http://${host}:${port}`;
+    }
+  } catch (e) {
+    console.log('Could not auto-detect dev server URL:', e.message);
+  }
+  return 'http://localhost:8081';
+}
 
 class HOMRServiceClass {
-  _serverUrl = DEFAULT_SERVER_URL;
+  _serverUrl = null; // Will auto-detect on first use
   _timeout = 120000; // 2 minutes — OMR can be slow on large scores
 
   /**
@@ -28,6 +53,10 @@ class HOMRServiceClass {
   }
 
   getServerUrl() {
+    if (!this._serverUrl) {
+      this._serverUrl = getDefaultServerUrl();
+      console.log(`🌐 HOMR server auto-detected: ${this._serverUrl}`);
+    }
     return this._serverUrl;
   }
 
@@ -44,11 +73,13 @@ class HOMRServiceClass {
    * @returns {Promise<{ok: boolean, message: string}>}
    */
   async checkHealth() {
+    const serverUrl = this.getServerUrl();
+    console.log(`🔍 Health check → ${serverUrl}/docs`);
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 10000);
+      const timeout = setTimeout(() => controller.abort(), 20000); // 20s for tunnel
 
-      const response = await fetch(`${this._serverUrl}/docs`, {
+      const response = await fetch(`${serverUrl}/docs`, {
         method: 'GET',
         signal: controller.signal,
       });
@@ -56,14 +87,16 @@ class HOMRServiceClass {
 
       return {
         ok: response.ok || response.status === 200,
-        message: response.ok ? 'Server is reachable' : `Server responded with ${response.status}`,
+        message: response.ok
+          ? `Server is reachable at ${serverUrl}`
+          : `Server responded with ${response.status}`,
       };
     } catch (e) {
       return {
         ok: false,
         message: e.name === 'AbortError'
-          ? 'Server timed out (10s)'
-          : `Cannot reach server: ${e.message}`,
+          ? `Server timed out (20s) — URL: ${serverUrl}`
+          : `Cannot reach server at ${serverUrl}: ${e.message}`,
       };
     }
   }
@@ -83,9 +116,9 @@ class HOMRServiceClass {
 
     report('Preparing image for upload...');
 
-    // Read the image file info
-    const fileInfo = await FileSystem.getInfoAsync(imageUri);
-    if (!fileInfo.exists) {
+    // Verify the image file exists using the new File API
+    const file = new File(imageUri);
+    if (!file.exists) {
       throw new Error('Image file not found: ' + imageUri);
     }
 
@@ -96,40 +129,43 @@ class HOMRServiceClass {
     const ext = fileName.split('.').pop().toLowerCase();
     const mimeType = ext === 'png' ? 'image/png' : 'image/jpeg';
 
-    // Upload using FileSystem.uploadAsync for reliable multipart upload
-    let uploadResult;
+    // Upload using fetch + FormData (replaces deprecated FileSystem.uploadAsync)
+    let response;
     try {
-      uploadResult = await FileSystem.uploadAsync(
-        `${this._serverUrl}/process`,
-        imageUri,
-        {
-          httpMethod: 'POST',
-          uploadType: FileSystem.FileSystemUploadType.MULTIPART,
-          fieldName: 'file',
-          mimeType: mimeType,
-          parameters: {},
-          headers: {
-            'Accept': 'application/xml, text/xml, */*',
-          },
-        }
-      );
+      // Read file as blob for upload
+      const fileBlob = file;
+      const formData = new FormData();
+      formData.append('file', {
+        uri: imageUri,
+        name: fileName,
+        type: mimeType,
+      });
+
+      response = await fetch(`${this.getServerUrl()}/process`, {
+        method: 'POST',
+        body: formData,
+        headers: {
+          'Accept': 'application/xml, text/xml, */*',
+        },
+      });
     } catch (e) {
       throw new Error(
-        `Failed to connect to HOMR server at ${this._serverUrl}: ${e.message}\n\n` +
+        `Failed to connect to HOMR server at ${this.getServerUrl()}: ${e.message}\n\n` +
         'Make sure the HOMR server is running and accessible from this device.'
       );
     }
 
-    if (uploadResult.status !== 200) {
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
       throw new Error(
-        `HOMR server returned status ${uploadResult.status}.\n` +
-        `Response: ${(uploadResult.body || '').substring(0, 500)}`
+        `HOMR server returned status ${response.status}.\n` +
+        `Response: ${body.substring(0, 500)}`
       );
     }
 
     report('Parsing MusicXML response...');
 
-    const musicXml = uploadResult.body;
+    const musicXml = await response.text();
     if (!musicXml || musicXml.length < 50) {
       throw new Error('HOMR server returned an empty or invalid response');
     }
@@ -179,8 +215,9 @@ class HOMRServiceClass {
     }
 
     // Assign synthetic x/y positions for cursor tracking.
-    // Since HOMR returns MusicXML (no pixel coords), we distribute
-    // notes evenly across the image width per staff system.
+    // Since HOMR returns MusicXML (no pixel coords), we use the
+    // beatOffset from the parser to position notes proportionally
+    // so that cursor tracking aligns with actual playback timing.
     const systemCount = metadata.systems || 1;
     const systemHeight = imageHeight / systemCount;
     const MARGIN_X = imageWidth * 0.08;
@@ -194,16 +231,28 @@ class HOMRServiceClass {
       notesBySystem[sys].push(note);
     }
 
-    // Assign x/y positions
+    // Assign x/y positions based on beatOffset (proportional to timing)
     for (const [sysIdx, sysNotes] of Object.entries(notesBySystem)) {
       const idx = parseInt(sysIdx);
-      const noteCount = sysNotes.length;
       const systemTop = idx * systemHeight;
       const systemMid = systemTop + systemHeight / 2;
 
-      for (let i = 0; i < noteCount; i++) {
-        const note = sysNotes[i];
-        note.x = MARGIN_X + (i / Math.max(1, noteCount - 1)) * usableWidth;
+      // Find the beat range for this system
+      const beats = sysNotes
+        .map(n => n.beatOffset)
+        .filter(b => typeof b === 'number' && Number.isFinite(b));
+      const minBeat = beats.length > 0 ? Math.min(...beats) : 0;
+      const maxBeat = beats.length > 0 ? Math.max(...beats) : 1;
+      const beatRange = maxBeat - minBeat;
+
+      for (const note of sysNotes) {
+        // Position x proportional to beatOffset within this system's beat range
+        if (typeof note.beatOffset === 'number' && Number.isFinite(note.beatOffset) && beatRange > 0) {
+          const fraction = (note.beatOffset - minBeat) / beatRange;
+          note.x = MARGIN_X + fraction * usableWidth;
+        } else {
+          note.x = MARGIN_X; // fallback
+        }
         // Treble staff notes above center, bass below
         const staffOffset = note.staffIndex % 2 === 0 ? -systemHeight * 0.15 : systemHeight * 0.15;
         note.y = systemMid + staffOffset;

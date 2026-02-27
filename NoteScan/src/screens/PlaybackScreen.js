@@ -16,6 +16,7 @@ import Slider from '@react-native-community/slider';
 import { Feather } from '@expo/vector-icons';
 import { AudioPlaybackService } from '../services/AudioPlaybackService';
 import { PlaybackVisualization } from '../components/PlaybackVisualization';
+import { ScoreInfoPanel } from '../components/ScoreInfoPanel';
 import { HOMRService } from '../services/HOMRService';
 
 /* ─── Theme ─── */
@@ -63,6 +64,7 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
   const [cursorInfo, setCursorInfo] = useState(null);
 
   const audioFileUriRef = useRef(null);
+  const prepareIdRef = useRef(0);
 
   const [voiceSelection, setVoiceSelection] = useState({
     Soprano: true,
@@ -108,24 +110,47 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
   /* ── Prepare audio when scoreData, voiceSelection, or instrument changes ── */
   useEffect(() => {
     if (!scoreData) return;
+    let cancelled = false;
+
     AudioPlaybackService.initAudio();
-    prepareAudio();
+    prepareAudio(cancelled);
+
     return () => {
-      AudioPlaybackService.stop();
+      cancelled = true;
+      // Only stop the sound object, do NOT delete the temp file here
+      // (it may be the file we just created in prepareAudio)
+      if (AudioPlaybackService.sound) {
+        try {
+          AudioPlaybackService.sound.stopAsync().catch(() => {});
+          AudioPlaybackService.sound.unloadAsync().catch(() => {});
+        } catch (_) {}
+        AudioPlaybackService.sound = null;
+      }
+      AudioPlaybackService.isPlaying = false;
     };
   }, [scoreData, tempo, voiceSelection, selectedPresetIndex]);
 
-  const prepareAudio = async () => {
+  const prepareAudio = async (cancelled) => {
+    const myId = ++prepareIdRef.current;
+    // Immediately invalidate old audio ref (old file will be deleted by effect cleanup)
+    audioFileUriRef.current = null;
     setPreparing(true);
     try {
       AudioPlaybackService.selectPreset(selectedPresetIndex);
 
+      const activeVoices = Object.entries(voiceSelection)
+        .filter(([, v]) => v).map(([k]) => k);
+      console.log(`🎵 prepareAudio [${myId}]: voices=${activeVoices.join(',')}`);      
+
       const filteredNotes = scoreData.notes.filter(
         (n) => n.type === 'rest' || voiceSelection[n.voice]
       );
-      const hasPlayable = filteredNotes.some((n) => n.type !== 'rest');
-      if (!hasPlayable) {
-        Alert.alert('No Notes', 'Select at least one voice');
+      const playableCount = filteredNotes.filter((n) => n.type !== 'rest').length;
+      console.log(`🎵 prepareAudio [${myId}]: ${playableCount} playable notes, ${filteredNotes.length} total (incl rests)`);
+
+      if (playableCount === 0) {
+        Alert.alert('No Notes', 'No notes found for the selected voice(s)');
+        audioFileUriRef.current = null;
         setPreparing(false);
         return;
       }
@@ -135,7 +160,15 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
       const { fileUri, timingMap, totalDuration: dur } =
         await AudioPlaybackService.createCombinedAudio(filteredNotes, tempo, systemsMetadata);
 
-      if (!timingMap.length || dur <= 0) {
+      // Check if this prepare cycle is still current (a newer one may have started)
+      if (myId !== prepareIdRef.current) {
+        console.log(`🎵 prepareAudio [${myId}]: stale, abandoning`);
+        return;
+      }
+
+      console.log(`🎵 prepareAudio [${myId}]: got fileUri=${fileUri ? 'yes' : 'EMPTY'}, dur=${dur}, timing=${timingMap.length}`);
+
+      if (!fileUri || !timingMap.length || dur <= 0) {
         Alert.alert('No playable notes', 'No notes detected for playback.');
         audioFileUriRef.current = null;
         setCursorInfo(null);
@@ -212,19 +245,26 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
         xRange: { min: minX, max: maxX },
       });
 
-      console.log(`✅ Audio ready: ${dur.toFixed(1)}s, ${positions.length} cursor positions`);
+      console.log(`✅ Audio ready [${myId}]: ${dur.toFixed(1)}s, ${positions.length} cursor pos, file=${fileUri ? 'OK' : 'MISSING'}`);
     } catch (e) {
-      console.error('prepareAudio error:', e);
-      Alert.alert('Error', 'Failed to prepare audio: ' + e.message);
+      console.error(`prepareAudio [${myId}] error:`, e);
+      if (myId === prepareIdRef.current) {
+        audioFileUriRef.current = null;
+        Alert.alert('Error', 'Failed to prepare audio: ' + e.message);
+      }
     } finally {
-      setPreparing(false);
+      if (myId === prepareIdRef.current) {
+        setPreparing(false);
+      }
     }
   };
 
   /* ── Playback controls ── */
   const handlePlay = async () => {
+    if (preparing) return; // Still building audio
     if (!audioFileUriRef.current) {
-      Alert.alert('Not Ready', 'Audio is still preparing');
+      console.warn('handlePlay: audioFileUriRef is null');
+      Alert.alert('Not Ready', 'Audio is still preparing. Please wait.');
       return;
     }
 
@@ -239,9 +279,12 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
     setIsPaused(false);
     setPlaybackTime(0);
 
+    const fileUri = audioFileUriRef.current;
+    console.log(`▶️ handlePlay: playing ${fileUri}`);
+
     try {
       await AudioPlaybackService.play(
-        audioFileUriRef.current,
+        fileUri,
         (timeSec) => setPlaybackTime(timeSec),
         () => {
           setIsPlaying(false);
@@ -275,7 +318,13 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
   };
 
   const toggleVoice = (voice) => {
-    if (isPlaying) return;
+    // Stop playback so audio re-prepares with new voice selection
+    if (isPlaying || isPaused) {
+      AudioPlaybackService.stop();
+      setIsPlaying(false);
+      setIsPaused(false);
+      setPlaybackTime(0);
+    }
     setVoiceSelection((prev) => {
       const next = { ...prev, [voice]: !prev[voice] };
       if (!Object.values(next).some(Boolean)) {
@@ -286,6 +335,45 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
     });
   };
 
+  const soloVoice = (voice) => {
+    // Stop playback so audio re-prepares
+    if (isPlaying || isPaused) {
+      AudioPlaybackService.stop();
+      setIsPlaying(false);
+      setIsPaused(false);
+      setPlaybackTime(0);
+    }
+    setVoiceSelection((prev) => {
+      const activeCount = Object.values(prev).filter(Boolean).length;
+      const onlyThisActive = prev[voice] && activeCount === 1;
+
+      if (onlyThisActive) {
+        // Already solo'd on this voice — re-enable all
+        console.log(`🎤 unsolo ${voice} → all voices on`);
+        return { Soprano: true, Alto: true, Tenor: true, Bass: true };
+      }
+
+      // Solo this voice (deactivate all others)
+      console.log(`🎤 solo ${voice}`);
+      return {
+        Soprano: voice === 'Soprano',
+        Alto: voice === 'Alto',
+        Tenor: voice === 'Tenor',
+        Bass: voice === 'Bass',
+      };
+    });
+  };
+
+  const allVoicesOn = () => {
+    if (isPlaying || isPaused) {
+      AudioPlaybackService.stop();
+      setIsPlaying(false);
+      setIsPaused(false);
+      setPlaybackTime(0);
+    }
+    setVoiceSelection({ Soprano: true, Alto: true, Tenor: true, Bass: true });
+  };
+
   /* ── Instrument selection ── */
   const handleSelectInstrument = (presetIndex) => {
     if (isPlaying) return;
@@ -294,6 +382,9 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
   };
 
   const currentInstrumentName = availablePresets[selectedPresetIndex]?.name || 'Piano';
+
+  // Compute current beat position from playback time + tempo
+  const currentBeat = totalDuration > 0 ? (playbackTime / (60 / tempo)) : 0;
 
   /* ── Render ── */
   if (processing) {
@@ -352,19 +443,9 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
           isPlaying={isPlaying}
           cursorInfo={cursorInfo}
           onSeek={handleSeek}
+          measureBeats={scoreData.metadata?.measureBeats}
+          tempo={tempo}
         />
-      </View>
-
-      {/* Score stats */}
-      <View style={styles.statsBar}>
-        <Text style={styles.statsText}>
-          {scoreData.notes.filter((n) => n.type !== 'rest').length} notes
-          {scoreData.metadata?.totalRests > 0 ? ` • ${scoreData.metadata.totalRests} rests` : ''}
-          {' • '}{scoreData.staves} staves
-          {scoreData.metadata?.keySignature ? ` • Key: ${scoreData.metadata.keySignature.type}${scoreData.metadata.keySignature.count > 0 ? ' ' + scoreData.metadata.keySignature.count : ''}` : ''}
-          {totalDuration > 0 ? ` • ${totalDuration.toFixed(1)}s` : ''}
-          {scoreData.metadata?.source ? ` • via ${scoreData.metadata.source}` : ''}
-        </Text>
       </View>
 
       {/* Tempo slider drawer */}
@@ -454,30 +535,65 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
             <Text style={styles.pillText}>{tempo} BPM</Text>
           </TouchableOpacity>
 
-          {/* Voice toggles */}
+          {/* Voice toggles: tap = solo, long press = toggle */}
           <View style={styles.voicePill}>
-            {Object.keys(voiceSelection).map((voice) => (
+            {/* All button */}
+            <TouchableOpacity
+              style={[
+                styles.voiceDot,
+                Object.values(voiceSelection).every(Boolean)
+                  ? styles.voiceDotAll
+                  : styles.voiceDotInactive,
+              ]}
+              onPress={allVoicesOn}
+            >
+              <Text
+                style={[
+                  styles.voiceDotText,
+                  Object.values(voiceSelection).every(Boolean)
+                    ? styles.voiceDotTextActive
+                    : styles.voiceDotTextInactive,
+                ]}
+              >
+                All
+              </Text>
+            </TouchableOpacity>
+            {Object.keys(voiceSelection).map((voice) => {
+              const vc = scoreData?.metadata?.voiceCounts || {};
+              const hasVoiceCounts = Object.keys(vc).length > 0;
+              const cnt = vc[voice] || 0;
+              // Only disable if we KNOW voice counts and this voice has 0 notes
+              const isEmpty = hasVoiceCounts && cnt === 0;
+              return (
               <TouchableOpacity
                 key={voice}
                 style={[
                   styles.voiceDot,
-                  voiceSelection[voice] ? styles.voiceDotActive : styles.voiceDotInactive,
+                  isEmpty
+                    ? styles.voiceDotEmpty
+                    : voiceSelection[voice]
+                      ? styles.voiceDotActive
+                      : styles.voiceDotInactive,
                 ]}
-                onPress={() => toggleVoice(voice)}
-                disabled={isPlaying}
+                onPress={() => isEmpty ? null : soloVoice(voice)}
+                onLongPress={() => isEmpty ? null : toggleVoice(voice)}
+                disabled={isEmpty}
               >
                 <Text
                   style={[
                     styles.voiceDotText,
-                    voiceSelection[voice]
-                      ? styles.voiceDotTextActive
-                      : styles.voiceDotTextInactive,
+                    isEmpty
+                      ? styles.voiceDotTextInactive
+                      : voiceSelection[voice]
+                        ? styles.voiceDotTextActive
+                        : styles.voiceDotTextInactive,
                   ]}
                 >
-                  {voice.charAt(0)}
+                  {voice.charAt(0)}{isEmpty ? '⊘' : ''}
                 </Text>
               </TouchableOpacity>
-            ))}
+              );
+            })}
           </View>
 
           {/* Progress indicator */}
@@ -486,6 +602,13 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
               {formatTime(playbackTime)} / {formatTime(totalDuration)}
             </Text>
           </View>
+
+          {/* Score info button (compact pill) */}
+          <ScoreInfoPanel
+            metadata={scoreData.metadata}
+            currentBeat={currentBeat}
+            isPlaying={isPlaying}
+          />
 
           {/* Instrument selector */}
           {availablePresets.length > 0 && (
@@ -610,15 +733,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#E6E2D8',
   },
-  statsBar: {
-    paddingHorizontal: 16,
-    paddingVertical: 6,
-    backgroundColor: palette.surfaceStrong,
-    marginHorizontal: 12,
-    borderBottomLeftRadius: 12,
-    borderBottomRightRadius: 12,
-  },
-  statsText: { fontSize: 11, color: palette.inkMuted, fontWeight: '600', textAlign: 'center' },
   tempoDrawer: {
     backgroundColor: barPalette.barRaised,
     paddingHorizontal: 16,
@@ -675,7 +789,8 @@ const styles = StyleSheet.create({
   },
   bottomBar: {
     backgroundColor: barPalette.bar,
-    paddingVertical: 10,
+    paddingTop: 12,
+    paddingBottom: Platform.OS === 'ios' ? 38 : 24,
     borderTopWidth: 1,
     borderTopColor: barPalette.barBorder,
   },
@@ -720,16 +835,19 @@ const styles = StyleSheet.create({
     borderColor: barPalette.barBorder,
   },
   voiceDot: {
-    width: 26,
+    minWidth: 26,
     height: 26,
     borderRadius: 13,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
+    paddingHorizontal: 4,
   },
   voiceDotActive: { backgroundColor: barPalette.accent, borderColor: barPalette.accent },
+  voiceDotAll: { backgroundColor: '#2A7B3D', borderColor: '#2A7B3D' },
+  voiceDotEmpty: { backgroundColor: barPalette.bar, borderColor: '#555', opacity: 0.4 },
   voiceDotInactive: { backgroundColor: barPalette.bar, borderColor: barPalette.barBorder },
-  voiceDotText: { fontSize: 12, fontWeight: '700' },
+  voiceDotText: { fontSize: 11, fontWeight: '700' },
   voiceDotTextActive: { color: barPalette.barText },
   voiceDotTextInactive: { color: barPalette.barTextMuted },
   viewPill: {

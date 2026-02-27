@@ -30,6 +30,8 @@ export const PlaybackVisualization = ({
   isPlaying,
   cursorInfo,
   onSeek, // (timeSeconds: number) => void
+  measureBeats, // [{ measureNum, startBeat, endBeat }] from metadata
+  tempo, // BPM for converting beats to time
   // cursorInfo = { positions, systemBounds, imageWidth, imageHeight, xRange }
 }) => {
   const scrollViewRef = useRef(null);
@@ -224,6 +226,24 @@ export const PlaybackVisualization = ({
       {/* ─── Horizontal orange progress bar (scrubber) ─── */}
       <Pressable onPress={handleProgressBarPress} style={styles.progressBarOuter}>
         <View style={styles.progressBarTrack}>
+          {/* Measure markers */}
+          {measureBeats && measureBeats.length > 1 && totalDuration > 0 && tempo > 0 && (
+            measureBeats.slice(1).map((mb, i) => {
+              const secPerBeat = 60 / tempo;
+              const markerTime = mb.startBeat * secPerBeat;
+              const pct = (markerTime / totalDuration) * 100;
+              if (pct <= 0 || pct >= 100) return null;
+              return (
+                <View key={`m-${i}`} style={[styles.measureMarker, { left: `${pct}%` }]}>
+                  {/* Show measure number every few measures */}
+                  {(mb.measureNum % Math.max(1, Math.ceil(measureBeats.length / 12)) === 0 ||
+                    mb.measureNum === 1) && (
+                    <Text style={styles.measureMarkerNum}>{mb.measureNum}</Text>
+                  )}
+                </View>
+              );
+            })
+          )}
           <View style={[styles.progressBarFill, { width: `${progressRatio * 100}%` }]} />
           {/* Thumb indicator */}
           {showCursor && (
@@ -339,6 +359,24 @@ const styles = StyleSheet.create({
     backgroundColor: '#E8E4DA',
     overflow: 'visible',
     position: 'relative',
+  },
+  measureMarker: {
+    position: 'absolute',
+    top: -2,
+    width: 1,
+    height: BAR_HEIGHT + 4,
+    backgroundColor: 'rgba(62, 60, 55, 0.2)',
+    zIndex: 1,
+  },
+  measureMarkerNum: {
+    position: 'absolute',
+    top: BAR_HEIGHT + 5,
+    fontSize: 7,
+    color: '#999',
+    fontWeight: '700',
+    textAlign: 'center',
+    width: 16,
+    marginLeft: -8,
   },
   progressBarFill: {
     position: 'absolute',
