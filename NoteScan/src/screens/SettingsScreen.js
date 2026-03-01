@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -13,7 +13,7 @@ import {
   ScrollView,
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
-import { HOMRService } from '../services/HOMRService';
+import { AudiverisService } from '../services/AudiverisService';
 
 const palette = {
   background: '#F9F7F1',
@@ -28,25 +28,22 @@ const palette = {
 };
 
 export const SettingsScreen = ({ onNavigateBack }) => {
-  const [serverUrl, setServerUrl] = useState(HOMRService.getServerUrl());
+  const [audiverisUrl, setAudiverisUrl] = useState(AudiverisService.getServerUrl());
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
 
   const handleSave = () => {
-    const url = serverUrl.trim();
-    if (!url) {
-      Alert.alert('Invalid URL', 'Please enter a server URL');
-      return;
-    }
-    HOMRService.setServerUrl(url);
-    Alert.alert('Saved', 'HOMR server URL updated');
+    const url = audiverisUrl.trim();
+    if (!url) { Alert.alert('Invalid URL', 'Please enter a server URL'); return; }
+    AudiverisService.setServerUrl(url);
+    Alert.alert('Saved', 'Server URL updated');
   };
 
   const handleTest = async () => {
     setTesting(true);
     setTestResult(null);
-    HOMRService.setServerUrl(serverUrl.trim());
-    const result = await HOMRService.checkHealth();
+    AudiverisService.setServerUrl(audiverisUrl.trim());
+    const result = await AudiverisService.checkHealth();
     setTestResult(result);
     setTesting(false);
   };
@@ -67,23 +64,46 @@ export const SettingsScreen = ({ onNavigateBack }) => {
       </View>
 
       <ScrollView style={styles.scrollContent}>
-        {/* HOMR Server Section */}
+        {/* OMR Engine Info */}
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Feather name="cpu" size={18} color={palette.ink} />
+            <Text style={styles.sectionTitle}>OMR Engine</Text>
+          </View>
+
+          <View style={[styles.engineCard, styles.engineCardActive]}>
+            <View style={styles.engineHeader}>
+              <View style={[styles.radioOuter, styles.radioOuterActive]}>
+                <View style={styles.radioInner} />
+              </View>
+              <Text style={[styles.engineName, styles.engineNameActive]}>
+                Audiveris
+              </Text>
+            </View>
+            <Text style={styles.engineDesc}>
+              Full-featured OMR. Detects notes, dynamics, articulations, repeats, and lyrics.
+            </Text>
+            <Text style={styles.engineVersion}>v5.9.0 • Advanced preprocessing</Text>
+          </View>
+        </View>
+
+        {/* Server Configuration */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Feather name="server" size={18} color={palette.ink} />
-            <Text style={styles.sectionTitle}>HOMR Server</Text>
+            <Text style={styles.sectionTitle}>Audiveris Server</Text>
           </View>
           <Text style={styles.sectionDescription}>
-            Music Eye sends sheet music images to a HOMR server for recognition.
-            The server processes the image and returns MusicXML data.
+            Audiveris is a full-featured OMR engine with advanced image preprocessing
+            (perspective correction, deskew, adaptive binarization, noise removal).
           </Text>
 
           <Text style={styles.label}>Server URL</Text>
           <TextInput
             style={styles.input}
-            value={serverUrl}
-            onChangeText={setServerUrl}
-            placeholder="http://localhost:8080"
+            value={audiverisUrl}
+            onChangeText={setAudiverisUrl}
+            placeholder="http://localhost:8082"
             placeholderTextColor="#B5B0A5"
             autoCapitalize="none"
             autoCorrect={false}
@@ -134,23 +154,18 @@ export const SettingsScreen = ({ onNavigateBack }) => {
             <Feather name="terminal" size={18} color={palette.ink} />
             <Text style={styles.sectionTitle}>Quick Setup</Text>
           </View>
+
           <Text style={styles.sectionDescription}>
-            Run the HOMR server with Docker:
+            Run the Audiveris server with Docker:
           </Text>
           <View style={styles.codeBlock}>
             <Text style={styles.codeText} selectable>
-              docker build -t homr .{'\n'}
-              docker run --rm -p 8080:8000 homr
+              cd audiveris-server{'\n'}
+              docker build -t audiveris-server .{'\n'}
+              docker run --rm -p 8082:8000 audiveris-server
             </Text>
           </View>
-          <Text style={styles.sectionDescription}>
-            Or use the pre-built image if available:
-          </Text>
-          <View style={styles.codeBlock}>
-            <Text style={styles.codeText} selectable>
-              docker run --rm -p 8080:8000 ghcr.io/liebharc/homr
-            </Text>
-          </View>
+
           <Text style={styles.hint}>
             If running on a physical device, replace "localhost" with your
             computer's IP address (e.g., 192.168.1.xxx).
@@ -297,5 +312,67 @@ const styles = StyleSheet.create({
     color: palette.inkMuted,
     fontStyle: 'italic',
     marginTop: 4,
+  },
+  engineRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 4,
+  },
+  engineCard: {
+    flex: 1,
+    backgroundColor: palette.surface,
+    borderWidth: 2,
+    borderColor: palette.border,
+    borderRadius: 14,
+    padding: 14,
+  },
+  engineCardActive: {
+    borderColor: palette.accent,
+    backgroundColor: '#FFF8F5',
+  },
+  engineHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 6,
+  },
+  radioOuter: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    borderWidth: 2,
+    borderColor: palette.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  radioOuterActive: {
+    borderColor: palette.accent,
+  },
+  radioInner: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: palette.accent,
+  },
+  engineName: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: palette.ink,
+  },
+  engineNameActive: {
+    color: palette.accent,
+  },
+  engineDesc: {
+    fontSize: 12,
+    color: palette.inkMuted,
+    lineHeight: 16,
+    marginBottom: 4,
+  },
+  engineVersion: {
+    fontSize: 10,
+    color: palette.border,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
   },
 });

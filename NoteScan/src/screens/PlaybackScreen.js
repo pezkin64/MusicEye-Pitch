@@ -4,6 +4,7 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
+  Pressable,
   ScrollView,
   ActivityIndicator,
   Alert,
@@ -17,7 +18,8 @@ import { Feather } from '@expo/vector-icons';
 import { AudioPlaybackService } from '../services/AudioPlaybackService';
 import { PlaybackVisualization } from '../components/PlaybackVisualization';
 import { ScoreInfoPanel } from '../components/ScoreInfoPanel';
-import { HOMRService } from '../services/HOMRService';
+import { OMRSettings } from '../services/OMRSettings';
+import { OMRCacheService } from '../services/OMRCacheService';
 
 /* ─── Theme ─── */
 const palette = {
@@ -73,18 +75,46 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
     Bass: true,
   });
 
-  /* ── Process score via HOMR server ── */
+  /* ── Process score via selected OMR engine (with caching) ── */
   const processScore = useCallback(async () => {
     if (!imageUri) return;
     setProcessing(true);
     setScoreError(null);
-    setProcessingStage('Connecting to HOMR server...');
+    const engine = OMRSettings.getEngine();
+    const engineName = 'Audiveris';
+    const service = OMRSettings.getService();
+    const timeout = engine === 'audiveris' ? 180000 : 120000;
+
+    // ── Check cache first ──
+    setProcessingStage('Checking cache...');
+    try {
+      const cached = await OMRCacheService.get(imageUri, engine);
+      if (cached && cached.notes && cached.notes.length > 0) {
+        console.log(`🗂️ Cache hit — ${cached.notes.length} notes, skipping ${engineName}`);
+        setScoreData(cached);
+        setProcessing(false);
+        setProcessingStage('');
+        return;
+      }
+    } catch (e) {
+      console.warn('Cache lookup failed, proceeding with OMR:', e.message);
+    }
+
+    // ── No cache — run OMR engine ──
+    setProcessingStage(`Connecting to ${engineName} server...`);
     try {
       const result = await Promise.race([
-        HOMRService.processSheet(imageUri, (stage) => setProcessingStage(stage)),
-        new Promise((_, rej) => setTimeout(() => rej(new Error('Processing timeout (2 min)')), 120000)),
+        service.processSheet(imageUri, (stage) => setProcessingStage(stage)),
+        new Promise((_, rej) => setTimeout(() => rej(new Error(`Processing timeout (${timeout / 1000}s)`)), timeout)),
       ]);
-      setScoreData(result);
+      console.log(`🎼 ${engineName} result: ${result.notes?.length || 0} notes, source=${result.metadata?.source}`);
+      if (!result.notes || result.notes.length === 0) {
+        setScoreError(`${engineName} could not detect any notes in this image. Try a clearer or higher-resolution photo.`);
+      } else {
+        setScoreData(result);
+        // Store in cache for next time (async, don't block)
+        OMRCacheService.set(imageUri, engine, result).catch(() => {});
+      }
     } catch (e) {
       setScoreError(e?.message || 'Failed to process music sheet');
     } finally {
@@ -107,18 +137,44 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
     });
   }, [processScore]);
 
-  /* ── Prepare audio when scoreData, voiceSelection, or instrument changes ── */
+  /* ── Phase 1: Pre-render voice tracks when scoreData, tempo, or instrument changes ── */
   useEffect(() => {
     if (!scoreData) return;
     let cancelled = false;
 
     AudioPlaybackService.initAudio();
-    prepareAudio(cancelled);
+
+    const doPreRender = async () => {
+      const myId = ++prepareIdRef.current;
+      setPreparing(true);
+      try {
+        AudioPlaybackService.selectPreset(selectedPresetIndex);
+        console.log(`🎹 preRender [${myId}]: rendering 4 voice tracks...`);
+
+        const result = await AudioPlaybackService.preRenderVoiceTracks(scoreData.notes, tempo);
+
+        if (cancelled || myId !== prepareIdRef.current) return;
+
+        if (result) {
+          // Pre-render succeeded — now do initial mix with current voice selection
+          await doMix(myId);
+        } else {
+          // Fallback: no beatOffset data — use legacy path
+          await legacyPrepare(myId);
+        }
+      } catch (e) {
+        console.error(`preRender [${myId}] error:`, e);
+        if (myId === prepareIdRef.current) {
+          Alert.alert('Error', 'Failed to prepare audio: ' + e.message);
+          setPreparing(false);
+        }
+      }
+    };
+
+    doPreRender();
 
     return () => {
       cancelled = true;
-      // Only stop the sound object, do NOT delete the temp file here
-      // (it may be the file we just created in prepareAudio)
       if (AudioPlaybackService.sound) {
         try {
           AudioPlaybackService.sound.stopAsync().catch(() => {});
@@ -128,45 +184,52 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
       }
       AudioPlaybackService.isPlaying = false;
     };
-  }, [scoreData, tempo, voiceSelection, selectedPresetIndex]);
+  }, [scoreData, tempo, selectedPresetIndex]);
 
-  const prepareAudio = async (cancelled) => {
+  /* ── Phase 2: Quick mix when voice selection changes (no re-render needed) ── */
+  useEffect(() => {
+    if (!scoreData) return;
+    if (!AudioPlaybackService.hasPreRenderedTracks(tempo)) return; // not ready yet
+
+    let cancelled = false;
     const myId = ++prepareIdRef.current;
-    // Immediately invalidate old audio ref (old file will be deleted by effect cleanup)
+
+    // Stop playback before remixing
+    if (AudioPlaybackService.sound) {
+      try {
+        AudioPlaybackService.sound.stopAsync().catch(() => {});
+        AudioPlaybackService.sound.unloadAsync().catch(() => {});
+      } catch (_) {}
+      AudioPlaybackService.sound = null;
+    }
+    AudioPlaybackService.isPlaying = false;
+    setIsPlaying(false);
+    setIsPaused(false);
+
+    doMix(myId).then(() => {
+      if (cancelled) return;
+    });
+
+    return () => { cancelled = true; };
+  }, [voiceSelection]);
+
+  /** Mix pre-rendered voice buffers into a single WAV based on current voiceSelection */
+  const doMix = async (myId) => {
     audioFileUriRef.current = null;
     setPreparing(true);
     try {
-      AudioPlaybackService.selectPreset(selectedPresetIndex);
-
+      // Check at least one voice has notes
       const activeVoices = Object.entries(voiceSelection)
         .filter(([, v]) => v).map(([k]) => k);
-      console.log(`🎵 prepareAudio [${myId}]: voices=${activeVoices.join(',')}`);      
-
-      const filteredNotes = scoreData.notes.filter(
-        (n) => n.type === 'rest' || voiceSelection[n.voice]
-      );
-      const playableCount = filteredNotes.filter((n) => n.type !== 'rest').length;
-      console.log(`🎵 prepareAudio [${myId}]: ${playableCount} playable notes, ${filteredNotes.length} total (incl rests)`);
-
-      if (playableCount === 0) {
-        Alert.alert('No Notes', 'No notes found for the selected voice(s)');
-        audioFileUriRef.current = null;
-        setPreparing(false);
-        return;
-      }
-
-      const systemsMetadata = scoreData.metadata?.systems || null;
+      console.log(`🎵 mix [${myId}]: voices=${activeVoices.join(',')}`);
 
       const { fileUri, timingMap, totalDuration: dur } =
-        await AudioPlaybackService.createCombinedAudio(filteredNotes, tempo, systemsMetadata);
+        await AudioPlaybackService.mixVoiceTracks(voiceSelection);
 
-      // Check if this prepare cycle is still current (a newer one may have started)
       if (myId !== prepareIdRef.current) {
-        console.log(`🎵 prepareAudio [${myId}]: stale, abandoning`);
+        console.log(`🎵 mix [${myId}]: stale, abandoning`);
         return;
       }
-
-      console.log(`🎵 prepareAudio [${myId}]: got fileUri=${fileUri ? 'yes' : 'EMPTY'}, dur=${dur}, timing=${timingMap.length}`);
 
       if (!fileUri || !timingMap.length || dur <= 0) {
         Alert.alert('No playable notes', 'No notes detected for playback.');
@@ -180,76 +243,58 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
       audioFileUriRef.current = fileUri;
       setTotalDuration(dur);
       setPlaybackTime(0);
+      buildCursorInfo(timingMap);
 
-      // Build cursor metadata
-      const imgW = scoreData.metadata?.imageWidth || 1;
-      const imgH = scoreData.metadata?.imageHeight || 1;
-
-      const metaSystems = scoreData.metadata?.systems || [];
-      const staffGroups = scoreData.metadata?.staffGroups || [];
-
-      let systemBounds;
-      if (metaSystems.length > 0) {
-        systemBounds = metaSystems.map((sys) => ({
-          top: sys.top,
-          bottom: sys.bottom,
-          staffIndices: sys.staffIndices,
-        }));
-      } else {
-        systemBounds = [];
-        let si = 0;
-        while (si < staffGroups.length) {
-          const a = staffGroups[si];
-          const b = staffGroups[si + 1];
-          const topA = Math.min(...a);
-          const botA = Math.max(...a);
-          if (b) {
-            const topB = Math.min(...b);
-            const botB = Math.max(...b);
-            if (topB - botA < (botA - topA) * 2.5) {
-              systemBounds.push({ top: topA, bottom: botB, staffIndices: [si, si + 1] });
-              si += 2;
-              continue;
-            }
-          }
-          systemBounds.push({ top: topA, bottom: botA, staffIndices: [si] });
-          si += 1;
-        }
-      }
-
-      const staffToSystem = new Map();
-      systemBounds.forEach((sys, idx) => {
-        for (const si of sys.staffIndices) staffToSystem.set(si, idx);
-      });
-
-      const xValues = timingMap.map((e) => e.x);
-      const minX = Math.min(...xValues);
-      const maxX = Math.max(...xValues);
-      const rangeX = Math.max(1, maxX - minX);
-
-      const positions = timingMap.map((entry) => {
-        const ratio = (entry.x - minX) / rangeX;
-        const sysIdx = staffToSystem.get(entry.staffIndex) ?? 0;
-        return {
-          time: entry.time,
-          ratio: Math.max(0, Math.min(1, ratio)),
-          systemIndex: sysIdx,
-        };
-      });
-
-      setCursorInfo({
-        positions,
-        systemBounds,
-        imageWidth: imgW,
-        imageHeight: imgH,
-        xRange: { min: minX, max: maxX },
-      });
-
-      console.log(`✅ Audio ready [${myId}]: ${dur.toFixed(1)}s, ${positions.length} cursor pos, file=${fileUri ? 'OK' : 'MISSING'}`);
+      console.log(`✅ Audio ready [${myId}]: ${dur.toFixed(1)}s, file=${fileUri ? 'OK' : 'MISSING'}`);
     } catch (e) {
-      console.error(`prepareAudio [${myId}] error:`, e);
+      console.error(`mix [${myId}] error:`, e);
       if (myId === prepareIdRef.current) {
         audioFileUriRef.current = null;
+        Alert.alert('Error', 'Failed to mix audio: ' + e.message);
+      }
+    } finally {
+      if (myId === prepareIdRef.current) {
+        setPreparing(false);
+      }
+    }
+  };
+
+  /** Legacy path: full re-render when beatOffset is unavailable */
+  const legacyPrepare = async (myId) => {
+    audioFileUriRef.current = null;
+    setPreparing(true);
+    try {
+      const filteredNotes = scoreData.notes.filter(
+        (n) => n.type === 'rest' || voiceSelection[n.voice]
+      );
+      const playableCount = filteredNotes.filter((n) => n.type !== 'rest').length;
+      if (playableCount === 0) {
+        Alert.alert('No Notes', 'No notes found for the selected voice(s)');
+        setPreparing(false);
+        return;
+      }
+
+      const systemsMetadata = scoreData.metadata?.systems || null;
+      const { fileUri, timingMap, totalDuration: dur } =
+        await AudioPlaybackService.createCombinedAudio(filteredNotes, tempo, systemsMetadata);
+
+      if (myId !== prepareIdRef.current) return;
+
+      if (!fileUri || !timingMap.length || dur <= 0) {
+        Alert.alert('No playable notes', 'No notes detected for playback.');
+        setPreparing(false);
+        return;
+      }
+
+      audioFileUriRef.current = fileUri;
+      setTotalDuration(dur);
+      setPlaybackTime(0);
+      buildCursorInfo(timingMap);
+
+      console.log(`✅ Audio ready (legacy) [${myId}]: ${dur.toFixed(1)}s`);
+    } catch (e) {
+      console.error(`legacyPrepare [${myId}] error:`, e);
+      if (myId === prepareIdRef.current) {
         Alert.alert('Error', 'Failed to prepare audio: ' + e.message);
       }
     } finally {
@@ -257,6 +302,63 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
         setPreparing(false);
       }
     }
+  };
+
+  /** Build cursor positioning data from a timing map */
+  const buildCursorInfo = (timingMap) => {
+    const imgW = scoreData.metadata?.imageWidth || 1;
+    const imgH = scoreData.metadata?.imageHeight || 1;
+    const metaSystems = scoreData.metadata?.systems || [];
+    const staffGroups = scoreData.metadata?.staffGroups || [];
+
+    let systemBounds;
+    if (metaSystems.length > 0) {
+      systemBounds = metaSystems.map((sys) => ({
+        top: sys.top, bottom: sys.bottom, staffIndices: sys.staffIndices,
+      }));
+    } else {
+      systemBounds = [];
+      let si = 0;
+      while (si < staffGroups.length) {
+        const a = staffGroups[si];
+        const b = staffGroups[si + 1];
+        const topA = Math.min(...a);
+        const botA = Math.max(...a);
+        if (b) {
+          const topB = Math.min(...b);
+          const botB = Math.max(...b);
+          if (topB - botA < (botA - topA) * 2.5) {
+            systemBounds.push({ top: topA, bottom: botB, staffIndices: [si, si + 1] });
+            si += 2;
+            continue;
+          }
+        }
+        systemBounds.push({ top: topA, bottom: botA, staffIndices: [si] });
+        si += 1;
+      }
+    }
+
+    const staffToSystem = new Map();
+    systemBounds.forEach((sys, idx) => {
+      for (const sti of sys.staffIndices) staffToSystem.set(sti, idx);
+    });
+
+    const xValues = timingMap.map((e) => e.x);
+    const minX = Math.min(...xValues);
+    const maxX = Math.max(...xValues);
+    const rangeX = Math.max(1, maxX - minX);
+
+    const positions = timingMap.map((entry) => {
+      const ratio = (entry.x - minX) / rangeX;
+      const sysIdx = staffToSystem.get(entry.staffIndex) ?? 0;
+      return { time: entry.time, ratio: Math.max(0, Math.min(1, ratio)), systemIndex: sysIdx };
+    });
+
+    setCursorInfo({
+      positions, systemBounds,
+      imageWidth: imgW, imageHeight: imgH,
+      xRange: { min: minX, max: maxX },
+    });
   };
 
   /* ── Playback controls ── */
@@ -397,7 +499,7 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
           <Text style={styles.stageText}>{processingStage}</Text>
         ) : null}
         <Text style={styles.hintText}>
-          Sending image to HOMR server for recognition
+          Sending image to server for recognition
         </Text>
       </View>
     );
@@ -505,8 +607,8 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
           contentContainerStyle={styles.barScroll}
         >
           {/* Play / Pause */}
-          <TouchableOpacity
-            style={styles.playPill}
+          <Pressable
+            style={({ pressed }) => [styles.playPill, pressed && styles.pressedPill]}
             onPress={isPlaying ? handlePause : handlePlay}
             disabled={preparing}
           >
@@ -518,32 +620,33 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
             <Text style={styles.playPillText}>
               {preparing ? 'Preparing...' : isPlaying ? 'Pause' : isPaused ? 'Resume' : 'Play'}
             </Text>
-          </TouchableOpacity>
+          </Pressable>
 
           {/* Stop */}
-          <TouchableOpacity style={styles.iconPill} onPress={handleStop}>
+          <Pressable style={({ pressed }) => [styles.iconPill, pressed && styles.pressedPill]} onPress={handleStop}>
             <Feather name="square" size={14} color={barPalette.barText} />
-          </TouchableOpacity>
+          </Pressable>
 
           {/* Tempo */}
-          <TouchableOpacity
-            style={[styles.zoomPill, showTempoSlider && { borderColor: barPalette.accent }]}
+          <Pressable
+            style={({ pressed }) => [styles.zoomPill, showTempoSlider && { borderColor: barPalette.accent }, pressed && styles.pressedPill]}
             onPress={() => !isPlaying && setShowTempoSlider((v) => !v)}
             disabled={isPlaying}
           >
             <Feather name="activity" size={12} color={barPalette.barTextMuted} />
             <Text style={styles.pillText}>{tempo} BPM</Text>
-          </TouchableOpacity>
+          </Pressable>
 
           {/* Voice toggles: tap = solo, long press = toggle */}
           <View style={styles.voicePill}>
             {/* All button */}
-            <TouchableOpacity
-              style={[
+            <Pressable
+              style={({ pressed }) => [
                 styles.voiceDot,
                 Object.values(voiceSelection).every(Boolean)
                   ? styles.voiceDotAll
                   : styles.voiceDotInactive,
+                pressed && styles.pressedDot,
               ]}
               onPress={allVoicesOn}
             >
@@ -557,7 +660,7 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
               >
                 All
               </Text>
-            </TouchableOpacity>
+            </Pressable>
             {Object.keys(voiceSelection).map((voice) => {
               const vc = scoreData?.metadata?.voiceCounts || {};
               const hasVoiceCounts = Object.keys(vc).length > 0;
@@ -565,15 +668,16 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
               // Only disable if we KNOW voice counts and this voice has 0 notes
               const isEmpty = hasVoiceCounts && cnt === 0;
               return (
-              <TouchableOpacity
+              <Pressable
                 key={voice}
-                style={[
+                style={({ pressed }) => [
                   styles.voiceDot,
                   isEmpty
                     ? styles.voiceDotEmpty
                     : voiceSelection[voice]
                       ? styles.voiceDotActive
                       : styles.voiceDotInactive,
+                  pressed && !isEmpty && styles.pressedDot,
                 ]}
                 onPress={() => isEmpty ? null : soloVoice(voice)}
                 onLongPress={() => isEmpty ? null : toggleVoice(voice)}
@@ -591,7 +695,7 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
                 >
                   {voice.charAt(0)}{isEmpty ? '⊘' : ''}
                 </Text>
-              </TouchableOpacity>
+              </Pressable>
               );
             })}
           </View>
@@ -612,10 +716,11 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
 
           {/* Instrument selector */}
           {availablePresets.length > 0 && (
-            <TouchableOpacity
-              style={[
+            <Pressable
+              style={({ pressed }) => [
                 styles.zoomPill,
                 showInstrumentPicker && { borderColor: barPalette.accent },
+                pressed && styles.pressedPill,
               ]}
               onPress={() => !isPlaying && setShowInstrumentPicker(true)}
               disabled={isPlaying}
@@ -624,7 +729,7 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
               <Text style={styles.pillText} numberOfLines={1}>
                 {currentInstrumentName}
               </Text>
-            </TouchableOpacity>
+            </Pressable>
           )}
         </ScrollView>
       </View>
@@ -867,6 +972,14 @@ const styles = StyleSheet.create({
     backgroundColor: barPalette.barRaised,
     borderWidth: 1,
     borderColor: barPalette.barBorder,
+  },
+  pressedPill: {
+    opacity: 0.6,
+    transform: [{ scale: 0.96 }],
+  },
+  pressedDot: {
+    opacity: 0.6,
+    transform: [{ scale: 0.9 }],
   },
   modalOverlay: {
     flex: 1,

@@ -16,12 +16,13 @@ const ACCENT_GLOW = 'rgba(224, 90, 42, 0.35)';
 const BAR_HEIGHT = 6;
 
 /**
- * Score viewer with:
+ * Horizontal-scroll score viewer with:
+ *  - Full score displayed at natural scale (fit height to screen)
  *  - Orange vertical cursor bar that snaps note-by-note
  *  - Orange horizontal progress bar (scrubber) at the top
- *  - Note-position highlights during playback
- *  - Tap-to-seek: tap anywhere on the sheet or progress bar to jump
- *  - Auto-scroll to keep the active system visible
+ *  - Note-position highlights during playback (pulse animation)
+ *  - Horizontal auto-scroll to follow the cursor
+ *  - Tap-to-seek on both the sheet image and progress bar
  */
 export const PlaybackVisualization = ({
   imageUri,
@@ -40,7 +41,7 @@ export const PlaybackVisualization = ({
   const [imageNaturalWidth, setImageNaturalWidth] = useState(0);
   const [imageNaturalHeight, setImageNaturalHeight] = useState(0);
 
-  // Pulse animation for the active note highlight
+  // Pulse animation for note highlights
   const pulseAnim = useRef(new Animated.Value(1)).current;
   useEffect(() => {
     if (!isPlaying) {
@@ -70,23 +71,13 @@ export const PlaybackVisualization = ({
     );
   }, [imageUri]);
 
-  // Derive rendered image size: fit width to container, scale height proportionally
-  const aspect =
-    imageNaturalWidth && imageNaturalHeight ? imageNaturalWidth / imageNaturalHeight : 1;
-  const renderWidth = containerWidth || Dimensions.get('window').width;
-  const renderHeight = aspect > 0 ? renderWidth / aspect : 400;
-
-  // Scale factor: image pixel coords → rendered coords
-  const scaleX = imageNaturalWidth > 0 ? renderWidth / imageNaturalWidth : 1;
-  const scaleY = imageNaturalHeight > 0 ? renderHeight / imageNaturalHeight : 1;
-
-  // ─── Cursor computation ───
+  // ─── Cursor data ───
   const positions = cursorInfo?.positions || [];
   const systemBounds = cursorInfo?.systemBounds || [];
   const xRange = cursorInfo?.xRange || { min: 0, max: 1 };
   const rangeSpan = Math.max(1, xRange.max - xRange.min);
 
-  // Find the current cursor position by snapping to the latest timing entry
+  // Find active cursor index by snapping to the latest timing entry
   let activeIndex = 0;
   if (positions.length > 0) {
     for (let i = 0; i < positions.length; i++) {
@@ -99,52 +90,80 @@ export const PlaybackVisualization = ({
   }
 
   const activeEntry = positions[activeIndex] || null;
+  const nextEntry = positions[activeIndex + 1] || null;
   const activeSystemIndex = activeEntry?.systemIndex ?? 0;
-  const activeRatio = activeEntry?.ratio ?? 0;
 
-  // Cursor X position in rendered coordinates
-  const imageX = xRange.min + activeRatio * rangeSpan;
-  const cursorX = imageX * scaleX;
-
-  // Cursor Y & height: span the active system
-  const system = systemBounds[activeSystemIndex];
-  let cursorTop = 0;
-  let cursorHeight = renderHeight;
-
-  if (system) {
-    const padding = Math.max(4, (system.bottom - system.top) * 0.1);
-    cursorTop = Math.max(0, (system.top - padding) * scaleY);
-    cursorHeight = Math.max(4, (system.bottom - system.top + padding * 2) * scaleY);
+  // ─── Smooth lerp: interpolate ratio between current and next position ───
+  let activeRatio = activeEntry?.ratio ?? 0;
+  if (activeEntry && nextEntry && nextEntry.systemIndex === activeEntry.systemIndex) {
+    // Same system — smoothly slide from current position to next
+    const elapsed = currentTime - activeEntry.time;
+    const span = nextEntry.time - activeEntry.time;
+    if (span > 0) {
+      const t = Math.max(0, Math.min(1, elapsed / span));
+      activeRatio = activeEntry.ratio + t * (nextEntry.ratio - activeEntry.ratio);
+    }
   }
 
-  const clampedX = Math.max(0, Math.min(cursorX, renderWidth - 3));
+  const system = systemBounds[activeSystemIndex];
 
-  // ─── Nearby notes for highlighting ───
-  // Collect all positions that share the same time slot as the active one
+  // ─── Layout metrics ───
+  const PROGRESS_AREA_HEIGHT = 30;
+  const sheetHeight = Math.max(50, containerHeight - PROGRESS_AREA_HEIGHT);
+  const hasImage = imageNaturalWidth > 0 && imageNaturalHeight > 0;
+
+  // ─── Scale: fit image height to container, let width overflow for horizontal scroll ───
+  let zoomScale = 1;
+  let imageOffsetY = 0;
+  let renderWidth = containerWidth || Dimensions.get('window').width;
+  let renderHeight = 400;
+
+  if (hasImage && containerWidth > 0 && containerHeight > 0) {
+    // Scale so the full image height fits the sheet area
+    zoomScale = sheetHeight / imageNaturalHeight;
+    renderWidth = imageNaturalWidth * zoomScale;
+    renderHeight = imageNaturalHeight * zoomScale;
+    imageOffsetY = 0;
+  }
+
+  // ─── Cursor position in zoomed-image coordinates ───
+  const cursorImageX = xRange.min + activeRatio * rangeSpan;
+  const cursorX = cursorImageX * zoomScale;
+  const clampedCursorX = Math.max(0, Math.min(cursorX, renderWidth - 3));
+
+  let cursorTop = 0;
+  let cursorHeight = renderHeight;
+  if (system) {
+    const pad = Math.max(4, (system.bottom - system.top) * 0.1);
+    cursorTop = (system.top - pad) * zoomScale;
+    cursorHeight = (system.bottom - system.top + pad * 2) * zoomScale;
+  }
+
+  // ─── Highlighted notes (all notes sharing the same time slot) ───
   const highlightedNotes = useMemo(() => {
     if (!activeEntry || positions.length === 0) return [];
     const activeTime = activeEntry.time;
     return positions.filter((p) => Math.abs(p.time - activeTime) < 0.001);
   }, [activeIndex, positions]);
 
-  // ─── Progress ratio for the horizontal bar ───
+  const dotSize = Math.max(16, Math.min(32, sheetHeight * 0.05));
+
+  // ─── Progress ratio for the scrubber bar ───
   const progressRatio =
     totalDuration > 0 ? Math.max(0, Math.min(1, currentTime / totalDuration)) : 0;
 
-  // Auto-scroll to keep active system visible
-  const prevSystemRef = useRef(activeSystemIndex);
+  // ─── Horizontal auto-scroll to keep cursor visible ───
   useEffect(() => {
     if (!scrollViewRef.current) return;
-    if (activeSystemIndex !== prevSystemRef.current || (isPlaying && system)) {
-      prevSystemRef.current = activeSystemIndex;
-      if (system) {
-        const scrollTarget = Math.max(0, system.top * scaleY - 40);
-        scrollViewRef.current.scrollTo({ y: scrollTarget, animated: true });
-      }
+    if ((isPlaying || currentTime > 0) && positions.length > 0) {
+      // Position cursor at ~35% from the left edge of the viewport
+      const targetX = Math.max(0, cursorX - containerWidth * 0.35);
+      const maxScroll = Math.max(0, renderWidth - containerWidth);
+      const clampedX = Math.min(targetX, maxScroll);
+      scrollViewRef.current.scrollTo({ x: clampedX, animated: true });
     }
-  }, [activeSystemIndex, isPlaying]);
+  }, [activeIndex, isPlaying]);
 
-  // Should we show the cursor?
   const showCursor = (isPlaying || currentTime > 0) && positions.length > 0;
 
   // ─── Tap-to-seek on the sheet image ───
@@ -154,11 +173,11 @@ export const PlaybackVisualization = ({
 
       const { locationX, locationY } = evt.nativeEvent;
 
-      // Convert tap coords back to image-space
-      const tapImgX = locationX / scaleX;
-      const tapImgY = locationY / scaleY;
+      // Convert tap coordinates back to image-space
+      const tapImgX = locationX / zoomScale;
+      const tapImgY = locationY / zoomScale;
 
-      // Find which system the tap is in
+      // Determine which system the tap landed in
       let tappedSystemIdx = -1;
       for (let i = 0; i < systemBounds.length; i++) {
         const sys = systemBounds[i];
@@ -169,26 +188,23 @@ export const PlaybackVisualization = ({
         }
       }
 
-      // Find the nearest position that matches the tapped system (or just nearest overall)
+      // Find the nearest cursor position within the tapped system
       let bestIdx = 0;
       let bestDist = Infinity;
 
       for (let i = 0; i < positions.length; i++) {
         const pos = positions[i];
-        // If we identified a system, only consider positions in that system
         if (tappedSystemIdx >= 0 && pos.systemIndex !== tappedSystemIdx) continue;
-
         const posImgX = xRange.min + pos.ratio * rangeSpan;
-        const dx = posImgX - tapImgX;
-        const dist = Math.abs(dx);
+        const dist = Math.abs(posImgX - tapImgX);
         if (dist < bestDist) {
           bestDist = dist;
           bestIdx = i;
         }
       }
 
-      // Fallback: if no match in system, find globally closest
-      if (tappedSystemIdx >= 0 && bestDist === Infinity) {
+      // Fallback: global nearest
+      if (bestDist === Infinity) {
         for (let i = 0; i < positions.length; i++) {
           const posImgX = xRange.min + positions[i].ratio * rangeSpan;
           const dist = Math.abs(posImgX - tapImgX);
@@ -201,7 +217,7 @@ export const PlaybackVisualization = ({
 
       onSeek(positions[bestIdx].time);
     },
-    [onSeek, positions, systemBounds, scaleX, scaleY, xRange, rangeSpan]
+    [onSeek, positions, systemBounds, zoomScale, xRange, rangeSpan]
   );
 
   // ─── Tap on the progress bar ───
@@ -209,10 +225,10 @@ export const PlaybackVisualization = ({
     (evt) => {
       if (!onSeek || totalDuration <= 0) return;
       const { locationX } = evt.nativeEvent;
-      const ratio = Math.max(0, Math.min(1, locationX / renderWidth));
+      const ratio = Math.max(0, Math.min(1, locationX / containerWidth));
       onSeek(ratio * totalDuration);
     },
-    [onSeek, totalDuration, renderWidth]
+    [onSeek, totalDuration, containerWidth]
   );
 
   return (
@@ -223,7 +239,7 @@ export const PlaybackVisualization = ({
         setContainerHeight(e.nativeEvent.layout.height);
       }}
     >
-      {/* ─── Horizontal orange progress bar (scrubber) ─── */}
+      {/* ─── Horizontal progress bar (scrubber) ─── */}
       <Pressable onPress={handleProgressBarPress} style={styles.progressBarOuter}>
         <View style={styles.progressBarTrack}>
           {/* Measure markers */}
@@ -235,7 +251,6 @@ export const PlaybackVisualization = ({
               if (pct <= 0 || pct >= 100) return null;
               return (
                 <View key={`m-${i}`} style={[styles.measureMarker, { left: `${pct}%` }]}>
-                  {/* Show measure number every few measures */}
                   {(mb.measureNum % Math.max(1, Math.ceil(measureBeats.length / 12)) === 0 ||
                     mb.measureNum === 1) && (
                     <Text style={styles.measureMarkerNum}>{mb.measureNum}</Text>
@@ -245,7 +260,6 @@ export const PlaybackVisualization = ({
             })
           )}
           <View style={[styles.progressBarFill, { width: `${progressRatio * 100}%` }]} />
-          {/* Thumb indicator */}
           {showCursor && (
             <View
               style={[
@@ -257,77 +271,85 @@ export const PlaybackVisualization = ({
         </View>
       </Pressable>
 
+      {/* ─── Horizontally scrolling sheet music ─── */}
       <ScrollView
         ref={scrollViewRef}
+        horizontal
         style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
+        showsHorizontalScrollIndicator={false}
+        scrollEventThrottle={16}
       >
         {imageUri ? (
           <Pressable onPress={handleSheetPress}>
-            <View style={[styles.imageWrapper, { width: renderWidth, height: renderHeight }]}>
-              <Image
-                source={{ uri: imageUri }}
-                style={{ width: renderWidth, height: renderHeight }}
-                resizeMode="contain"
-              />
-
-              {/* Note highlights: orange circles on each note at the active time */}
-              {showCursor &&
-                highlightedNotes.map((note, idx) => {
-                  const nImgX = xRange.min + note.ratio * rangeSpan;
-                  const nX = nImgX * scaleX;
-                  const noteSys = systemBounds[note.systemIndex];
-                  const nY = noteSys
-                    ? ((noteSys.top + noteSys.bottom) / 2) * scaleY
-                    : cursorTop + cursorHeight / 2;
-                  const dotSize = Math.max(14, cursorHeight * 0.12);
-
-                  return (
-                    <Animated.View
-                      key={`hl-${idx}`}
-                      style={[
-                        styles.noteHighlight,
-                        {
-                          left: nX - dotSize / 2,
-                          top: nY - dotSize / 2,
-                          width: dotSize,
-                          height: dotSize,
-                          borderRadius: dotSize / 2,
-                          opacity: pulseAnim,
-                        },
-                      ]}
-                    />
-                  );
-                })}
-
-              {/* Vertical cursor bar */}
-              {showCursor && (
-                <View
-                  style={[
-                    styles.cursor,
-                    {
-                      left: clampedX,
-                      top: cursorTop,
-                      height: cursorHeight,
-                    },
-                  ]}
+            <View style={[styles.sheetClip, { width: renderWidth, height: renderHeight }]}>
+              <View
+                style={{
+                  width: renderWidth,
+                  height: renderHeight,
+                }}
+              >
+                <Image
+                  source={{ uri: imageUri }}
+                  style={{ width: renderWidth, height: renderHeight }}
+                  resizeMode="contain"
                 />
-              )}
 
-              {/* Faint highlight region behind the cursor on the active system */}
-              {showCursor && system && (
-                <View
-                  style={[
-                    styles.systemHighlight,
-                    {
-                      top: cursorTop,
-                      height: cursorHeight,
-                      width: clampedX,
-                    },
-                  ]}
-                />
-              )}
+                {/* Note highlights: circles on notes at the active time */}
+                {showCursor &&
+                  highlightedNotes.map((note, idx) => {
+                    const nImgX = xRange.min + note.ratio * rangeSpan;
+                    const nX = nImgX * zoomScale;
+                    const noteSys = systemBounds[note.systemIndex];
+                    const nY = noteSys
+                      ? ((noteSys.top + noteSys.bottom) / 2) * zoomScale
+                      : cursorTop + cursorHeight / 2;
+
+                    return (
+                      <Animated.View
+                        key={`hl-${idx}`}
+                        style={[
+                          styles.noteHighlight,
+                          {
+                            left: nX - dotSize / 2,
+                            top: nY - dotSize / 2,
+                            width: dotSize,
+                            height: dotSize,
+                            borderRadius: dotSize / 2,
+                            opacity: pulseAnim,
+                          },
+                        ]}
+                      />
+                    );
+                  })}
+
+                {/* Vertical cursor bar */}
+                {showCursor && (
+                  <View
+                    style={[
+                      styles.cursor,
+                      {
+                        left: clampedCursorX,
+                        top: cursorTop,
+                        height: cursorHeight,
+                      },
+                    ]}
+                  />
+                )}
+
+                {/* Played-region highlight behind the cursor */}
+                {showCursor && system && (
+                  <View
+                    style={[
+                      styles.systemHighlight,
+                      {
+                        top: cursorTop,
+                        height: cursorHeight,
+                        width: clampedCursorX,
+                      },
+                    ]}
+                  />
+                )}
+              </View>
             </View>
           </Pressable>
         ) : (
@@ -406,10 +428,8 @@ const styles = StyleSheet.create({
   scrollView: {
     flex: 1,
   },
-  scrollContent: {
-    alignItems: 'center',
-  },
-  imageWrapper: {
+  sheetClip: {
+    overflow: 'hidden',
     position: 'relative',
   },
   /* ─── Cursor & highlights ─── */

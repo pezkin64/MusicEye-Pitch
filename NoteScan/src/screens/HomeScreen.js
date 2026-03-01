@@ -8,7 +8,7 @@ import {
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { SvgXml } from 'react-native-svg';
-import { HOMRService } from '../services/HOMRService';
+import { AudiverisService } from '../services/AudiverisService';
 
 const logoXml = `
 <svg width="160" height="120" viewBox="0 0 160 120" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -27,7 +27,7 @@ export const HomeScreen = ({ onNavigate, onPickFromGallery, onPickFromCamera }) 
 
   const checkServer = async () => {
     setServerStatus(null);
-    const result = await HOMRService.checkHealth();
+    const result = await AudiverisService.checkHealth();
     setServerStatus(result.ok);
   };
 
@@ -50,8 +50,8 @@ export const HomeScreen = ({ onNavigate, onPickFromGallery, onPickFromCamera }) 
             serverStatus ? styles.statusOk : styles.statusDown,
           ]} />
           <Text style={styles.statusText}>
-            {serverStatus === null ? 'Checking HOMR server...' :
-             serverStatus ? 'HOMR server connected' : 'HOMR server unreachable'}
+            {serverStatus === null ? 'Checking server...' :
+             serverStatus ? 'OMR server connected' : 'OMR server unreachable'}
           </Text>
           <Feather name="refresh-cw" size={12} color="#6E675E" style={{ marginLeft: 4 }} />
         </TouchableOpacity>

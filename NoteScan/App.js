@@ -1,13 +1,19 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { StatusBar, View, Text, TouchableOpacity, Alert } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { HomeScreen } from './src/screens/HomeScreen';
 import { PlaybackScreen } from './src/screens/PlaybackScreen';
 import { SettingsScreen } from './src/screens/SettingsScreen';
+import { OMRSettings } from './src/services/OMRSettings';
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState('home');
   const [playbackImageUri, setPlaybackImageUri] = useState(null);
+
+  // Load saved OMR engine preference on startup
+  useEffect(() => {
+    OMRSettings.load();
+  }, []);
 
   const pickImageFromGallery = async () => {
     try {
@@ -95,12 +101,12 @@ export default function App() {
         <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F9F7F1' }}>
           <Text style={{ fontSize: 18, color: '#3E3C37', marginBottom: 20 }}>❓ Help</Text>
           <Text style={{ fontSize: 14, color: '#6E675E', marginBottom: 20, paddingHorizontal: 24, textAlign: 'center' }}>
-            Music Eye uses the HOMR (Homer's Optical Music Recognition) server to scan
+            Music Eye uses OMR (Optical Music Recognition) servers to scan
             sheet music images and convert them to playable notes.{'\n\n'}
             1. Take a photo or pick an image of sheet music{'\n'}
-            2. The image is sent to the HOMR server for analysis{'\n'}
+            2. The image is sent to the Audiveris OMR server{'\n'}
             3. The returned MusicXML is converted to playable audio{'\n\n'}
-            Configure the HOMR server URL in Settings.
+            Configure the server URL in Settings.
           </Text>
           <TouchableOpacity onPress={() => setCurrentScreen('home')}>
             <Text style={{ color: '#6E675E', fontSize: 16, fontWeight: '600' }}>← Back to Home</Text>

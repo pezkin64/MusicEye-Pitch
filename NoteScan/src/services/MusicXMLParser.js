@@ -1,7 +1,7 @@
 /**
  * MusicXML Parser
  *
- * Parses MusicXML returned by the HOMR server into the note/rest format
+ * Parses MusicXML returned by the OMR server into the note/rest format
  * expected by AudioPlaybackService and PlaybackScreen.
  *
  * Key improvement: properly tracks beat position using MusicXML's
@@ -161,7 +161,7 @@ export class MusicXMLParser {
             const clefNum = cm[1] ? parseInt(cm[1]) : 1;
             const sign = cm[2].match(/<sign>(\w)<\/sign>/)?.[1] || 'G';
             currentClefs[clefNum] = sign === 'G' ? 'treble' : sign === 'F' ? 'bass' : sign === 'C' ? 'alto' : 'treble';
-            // Auto-detect stavesInPart from clef numbers (HOMR often omits <staves>)
+            // Auto-detect stavesInPart from clef numbers (OMR engines sometimes omit <staves>)
             if (clefNum > stavesInPart) stavesInPart = clefNum;
           }
 
@@ -174,7 +174,7 @@ export class MusicXMLParser {
 
         // ─── Parse note/rest/backup/forward events IN DOCUMENT ORDER ───
         // Track beat position PER VOICE within the measure.
-        // HOMR often interleaves staves without <backup> elements,
+        // Some OMR engines interleave staves without <backup> elements,
         // so when a note switches to a different voice/staff, we must
         // track each voice independently to avoid treating concurrent
         // notes as sequential.
@@ -244,7 +244,7 @@ export class MusicXMLParser {
           // Initialize voice position on first encounter
           if (!voiceBeatPos.has(vKey)) {
             // Each voice/staff starts at the BEGINNING of the measure (beat 0).
-            // HOMR interleaves notes from different staves without <backup>
+            // OMR engines may interleave notes from different staves without <backup>
             // elements, so we can't use the linear (cumulative) position.
             // For proper MusicXML with <backup>, the backup resets
             // linearBeatPos to 0 anyway, so starting at 0 is correct either way.
@@ -383,6 +383,75 @@ export class MusicXMLParser {
     for (const n of notes) {
       if (n.type === 'note') voiceCounts[n.voice] = (voiceCounts[n.voice] || 0) + 1;
     }
+
+    // Check how many of the 4 SATB voices actually have notes.
+    // Audiveris often puts everything in voice 1 → only Soprano (single staff)
+    // or Soprano + Tenor (grand staff). When ≥2 voices are empty, redistribute
+    // using a hybrid per-beat + quartile approach:
+    //   • Beats with 2+ simultaneous notes: top→S, next→A, next→T, bottom→B
+    //   • Beats with only 1 note: use global quartile fallback
+    const allFourVoices = ['Soprano', 'Alto', 'Tenor', 'Bass'];
+    const emptyVoices = allFourVoices.filter(v => !voiceCounts[v]);
+    if (emptyVoices.length >= 2 && noteCount > 1) {
+      const pitched = notes.filter(n => n.type === 'note' && n.midiNote != null);
+      const total = pitched.length;
+
+      if (total >= 2) {
+        // ── Step 1: Group notes by beatOffset (simultaneous notes) ──
+        const beatGroups = new Map(); // beatOffset → [note, note, ...]
+        for (const n of pitched) {
+          const key = n.beatOffset.toFixed(4); // avoid float key issues
+          if (!beatGroups.has(key)) beatGroups.set(key, []);
+          beatGroups.get(key).push(n);
+        }
+
+        // ── Step 2: Per-beat assignment for chords (2+ notes at same beat) ──
+        const voiceOrder = ['Soprano', 'Alto', 'Tenor', 'Bass'];
+        const singleNotes = []; // notes alone on their beat — handled in step 3
+
+        for (const [, group] of beatGroups) {
+          if (group.length >= 2) {
+            // Sort highest pitch first → assign S, A, T, B top-to-bottom
+            group.sort((a, b) => b.midiNote - a.midiNote);
+            group.forEach((n, i) => {
+              n.voice = voiceOrder[Math.min(i, 3)];
+            });
+          } else {
+            singleNotes.push(group[0]);
+          }
+        }
+
+        // ── Step 3: Quartile fallback for single-note beats ──
+        if (singleNotes.length > 0) {
+          // Use all pitched notes to compute quartile boundaries (not just singles)
+          const sortedAll = [...pitched].sort((a, b) => a.midiNote - b.midiNote);
+          const q1 = sortedAll[Math.floor(sortedAll.length * 0.25)].midiNote;
+          const q2 = sortedAll[Math.floor(sortedAll.length * 0.50)].midiNote;
+          const q3 = sortedAll[Math.floor(sortedAll.length * 0.75)].midiNote;
+
+          for (const n of singleNotes) {
+            if (n.midiNote < q1)       n.voice = 'Bass';
+            else if (n.midiNote < q2)  n.voice = 'Tenor';
+            else if (n.midiNote < q3)  n.voice = 'Alto';
+            else                       n.voice = 'Soprano';
+          }
+        }
+
+        const chordBeats = [...beatGroups.values()].filter(g => g.length >= 2).length;
+        console.log(`🎤 Hybrid SATB: ${chordBeats} chord beats (per-beat), ${singleNotes.length} single notes (quartile) across ${total} total`);
+      } else {
+        // Only 1 pitched note — assign Soprano
+        pitched[0].voice = 'Soprano';
+      }
+
+      // Recount from scratch
+      for (const k of Object.keys(voiceCounts)) delete voiceCounts[k];
+      for (const n of notes) {
+        if (n.type === 'note') voiceCounts[n.voice] = (voiceCounts[n.voice] || 0) + 1;
+      }
+      console.log(`🎤 After redistribution:`, JSON.stringify(voiceCounts));
+    }
+
     metadata.voiceCounts = voiceCounts;
 
     // Note range (lowest / highest MIDI and pitch names)

@@ -341,6 +341,170 @@ export class AudioPlaybackService {
     return { fileUri, timingMap, totalDuration: globalTime };
   }
 
+  /* ─── Pre-rendered voice tracks ─── */
+
+  // Cached voice buffers and metadata
+  static _voiceBuffers = null; // { Soprano: Float32Array, Alto: ..., Tenor: ..., Bass: ... }
+  static _voiceTimingMap = null;
+  static _voiceTotalDuration = 0;
+  static _voiceRenderKey = null; // "presetIdx_tempo" to detect when full re-render is needed
+
+  /**
+   * Pre-render separate audio buffers for each SATB voice.
+   * Called once when scoreData, tempo, or instrument changes.
+   * After this, voice selection changes are instant (just mix buffers).
+   *
+   * @returns {{ timingMap, totalDuration }} - shared timing data
+   */
+  static async preRenderVoiceTracks(notes, tempo = 120) {
+    const sampleRate = 44100;
+    const secondsPerBeat = 60 / tempo;
+    const renderKey = `${this.getActivePresetIndex()}_${tempo}`;
+
+    const getBeats = (n) => n.tiedBeats || n.durationBeats || ({
+      whole: 4, half: 2, quarter: 1, eighth: 0.5, sixteenth: 0.25,
+      '32nd': 0.125, dotted_whole: 6, dotted_half: 3, dotted_quarter: 1.5,
+      dotted_eighth: 0.75, dotted_sixteenth: 0.375, dotted_32nd: 0.1875,
+    })[n.duration] || 1;
+
+    const hasBeatOffset = notes.some(n => typeof n.beatOffset === 'number' && Number.isFinite(n.beatOffset));
+    if (!hasBeatOffset) {
+      // Fall back to legacy path — can't pre-render without beatOffset
+      this._voiceBuffers = null;
+      this._voiceRenderKey = null;
+      return null;
+    }
+
+    const realNotes = notes.filter(n => n.type !== 'rest' && n.midiNote != null);
+
+    // Group by beatOffset for timing map
+    const beatMap = new Map();
+    for (const n of realNotes) {
+      const bo = Math.round(n.beatOffset * 1000) / 1000;
+      if (!beatMap.has(bo)) beatMap.set(bo, []);
+      beatMap.get(bo).push(n);
+    }
+    const beatPositions = [...beatMap.keys()].sort((a, b) => a - b);
+
+    // Build timing map (shared across all voices)
+    const timingMap = [];
+    for (const bo of beatPositions) {
+      const group = beatMap.get(bo);
+      const time = bo * secondsPerBeat;
+      const avgX = group.reduce((s, n) => s + (n.x || 0), 0) / group.length;
+      const avgY = group.reduce((s, n) => s + (n.y || 0), 0) / group.length;
+      timingMap.push({ time, x: avgX, y: avgY, staffIndex: group[0].staffIndex, isRest: false });
+    }
+
+    // Add rests for cursor tracking
+    const rests = notes.filter(n => n.type === 'rest' && typeof n.beatOffset === 'number');
+    for (const r of rests) {
+      const rbo = Math.round(r.beatOffset * 1000) / 1000;
+      if (!beatMap.has(rbo)) {
+        timingMap.push({ time: r.beatOffset * secondsPerBeat, x: r.x || 0, y: r.y || 0, staffIndex: r.staffIndex, isRest: true });
+      }
+    }
+    timingMap.sort((a, b) => a.time - b.time);
+
+    // Compute total duration
+    let totalDuration = 0;
+    if (beatPositions.length > 0) {
+      const lastBeat = beatPositions[beatPositions.length - 1];
+      const lastGroup = beatMap.get(lastBeat);
+      const maxBeats = Math.max(...lastGroup.map(getBeats));
+      totalDuration = (lastBeat + maxBeats) * secondsPerBeat;
+    }
+
+    // Build per-voice audio buffers
+    const tailSec = 0.3;
+    const totalSamples = Math.floor((totalDuration + tailSec) * sampleRate);
+    const voices = ['Soprano', 'Alto', 'Tenor', 'Bass'];
+    const buffers = {};
+
+    for (const v of voices) {
+      buffers[v] = new Float32Array(totalSamples);
+    }
+
+    // Render each note into its voice buffer
+    for (const bo of beatPositions) {
+      const group = beatMap.get(bo);
+      const offsetSamples = Math.floor(bo * secondsPerBeat * sampleRate);
+      for (const n of group) {
+        const voice = n.voice || 'Soprano';
+        const buf = buffers[voice] || buffers.Soprano;
+        const dur = getBeats(n) * secondsPerBeat;
+        const noteAudio = this.generatePianoNote(n.midiNote, dur);
+        const start = offsetSamples;
+        const len = Math.min(noteAudio.length, totalSamples - start);
+        for (let i = 0; i < len; i++) buf[start + i] += noteAudio[i];
+      }
+    }
+
+    this._voiceBuffers = buffers;
+    this._voiceTimingMap = timingMap;
+    this._voiceTotalDuration = totalDuration;
+    this._voiceRenderKey = renderKey;
+
+    const counts = voices.map(v => {
+      let peak = 0;
+      for (let i = 0; i < buffers[v].length; i++) peak = Math.max(peak, Math.abs(buffers[v][i]));
+      return `${v[0]}:${peak > 0 ? 'yes' : 'empty'}`;
+    }).join(', ');
+    console.log(`🎹 Pre-rendered 4 voice tracks (${(totalDuration).toFixed(1)}s, ${totalSamples} samples): ${counts}`);
+
+    return { timingMap, totalDuration };
+  }
+
+  /**
+   * Mix selected voice buffers into a single WAV file.
+   * This is near-instant since we're just adding pre-rendered Float32Arrays.
+   *
+   * @param {Object} voiceSelection - { Soprano: true/false, Alto: ..., Tenor: ..., Bass: ... }
+   * @returns {{ fileUri, timingMap, totalDuration }}
+   */
+  static async mixVoiceTracks(voiceSelection) {
+    if (!this._voiceBuffers) {
+      throw new Error('Voice tracks not pre-rendered');
+    }
+
+    const totalSamples = this._voiceBuffers.Soprano.length;
+    const master = new Float32Array(totalSamples);
+    const activeVoices = [];
+
+    for (const [voice, active] of Object.entries(voiceSelection)) {
+      if (active && this._voiceBuffers[voice]) {
+        const buf = this._voiceBuffers[voice];
+        for (let i = 0; i < totalSamples; i++) master[i] += buf[i];
+        activeVoices.push(voice);
+      }
+    }
+
+    // Normalize
+    let peak = 0;
+    for (let i = 0; i < master.length; i++) {
+      if (!Number.isFinite(master[i])) master[i] = 0;
+      peak = Math.max(peak, Math.abs(master[i]));
+    }
+    if (peak > 1) for (let i = 0; i < master.length; i++) master[i] /= peak;
+
+    const fileUri = await this.writeWavToFile(master);
+    console.log(`🎹 Mixed ${activeVoices.join('+')} → WAV`);
+
+    return {
+      fileUri,
+      timingMap: this._voiceTimingMap,
+      totalDuration: this._voiceTotalDuration,
+    };
+  }
+
+  /**
+   * Check if the voice tracks are pre-rendered and current.
+   */
+  static hasPreRenderedTracks(tempo) {
+    const expectedKey = `${this.getActivePresetIndex()}_${tempo}`;
+    return this._voiceBuffers != null && this._voiceRenderKey === expectedKey;
+  }
+
   /**
    * Legacy x-position-based audio generation (fallback when beatOffset is unavailable).
    */
@@ -574,14 +738,10 @@ export class AudioPlaybackService {
       }
       this.sound = null;
     }
-    // Clean up temp file
-    if (this._tempFileUri) {
-      try {
-        const tmpFile = new File(this._tempFileUri);
-        if (tmpFile.exists) tmpFile.delete();
-      } catch (_) { /* already removed */ }
-      this._tempFileUri = null;
-    }
+    // NOTE: Do NOT delete the temp file here — PlaybackScreen may
+    // still reference it (e.g. pressing Play again after finish).
+    // Temp files are cleaned up when a new WAV is generated (overwrite)
+    // or when the screen unmounts.
     this.isPlaying = false;
   }
 

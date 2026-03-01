@@ -1,7 +1,7 @@
 {
   "name": "notescan",
   "version": "2.0.0",
-  "description": "React Native sheet music scanner — powered by HOMR server-side OMR",
+  "description": "React Native sheet music scanner — powered by Audiveris server-side OMR",
   "main": "node_modules/expo/AppEntry.js",
   "scripts": {
     "start": "expo start",
@@ -12,11 +12,13 @@
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",
+    "@react-native-async-storage/async-storage": "^2.2.0",
     "@react-native-community/slider": "5.0.1",
     "expo": "~54.0.0",
     "expo-asset": "~12.0.12",
     "expo-av": "~16.0.8",
     "expo-camera": "~17.0.10",
+    "expo-crypto": "~15.0.8",
     "expo-file-system": "~19.0.21",
     "expo-image-picker": "~17.0.10",
     "react": "19.1.0",
