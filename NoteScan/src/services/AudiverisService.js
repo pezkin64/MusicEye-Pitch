@@ -9,6 +9,7 @@
  *   - Standard MusicXML 4.0.3 output
  */
 import { File } from 'expo-file-system';
+import * as FileSystem from 'expo-file-system';
 import Constants from 'expo-constants';
 import { MusicXMLParser } from './MusicXMLParser';
 
@@ -168,16 +169,18 @@ class AudiverisServiceClass {
 
     report('Parsing response...');
 
-    // Server now returns JSON with { musicxml, notePositions }
+    // Server now returns JSON with { musicxml, notePositions, processedImage }
     const contentType = response.headers.get('content-type') || '';
     let musicXml;
     let notePositions = null;
+    let processedImageB64 = null;
 
     if (contentType.includes('application/json')) {
       const json = await response.json();
       musicXml = json.musicxml;
       notePositions = json.notePositions || null;
-      console.log(`🎼 Audiveris: received JSON — ${musicXml?.length || 0} chars XML, positions: ${notePositions ? `${notePositions.heads?.length || 0} heads` : 'none'}`);
+      processedImageB64 = json.processedImage || null;
+      console.log(`🎼 Audiveris: received JSON — ${musicXml?.length || 0} chars XML, positions: ${notePositions ? `${notePositions.heads?.length || 0} heads` : 'none'}, processedImage: ${processedImageB64 ? `${Math.round(processedImageB64.length / 1024)}KB` : 'none'}`);
     } else {
       // Fallback for older server versions returning plain XML
       musicXml = await response.text();
@@ -197,6 +200,23 @@ class AudiverisServiceClass {
     const parsed = MusicXMLParser.parse(musicXml);
     console.log(`🎼 Audiveris: parsed ${parsed.notes.length} notes, ${parsed.metadata.totalMeasures || '?'} measures`);
 
+    // Save preprocessed image to disk if available
+    let processedImageUri = null;
+    if (processedImageB64) {
+      try {
+        const dir = FileSystem.cacheDirectory + 'omr/';
+        await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {});
+        const path = dir + 'preprocessed_' + Date.now() + '.png';
+        await FileSystem.writeAsStringAsync(path, processedImageB64, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        processedImageUri = path;
+        console.log(`🎼 Audiveris: saved preprocessed image → ${path}`);
+      } catch (e) {
+        console.warn('Could not save preprocessed image:', e.message);
+      }
+    }
+
     report('Processing complete!');
 
     return {
@@ -204,6 +224,7 @@ class AudiverisServiceClass {
       notes: parsed.notes,
       metadata: parsed.metadata,
       notePositions,
+      processedImageUri,
     };
   }
 
@@ -263,31 +284,37 @@ class AudiverisServiceClass {
    * Returns a scoreData object compatible with PlaybackScreen.
    */
   async processSheet(imageUri, onProgress) {
-    const { notes, metadata, notePositions } = await this.processImage(imageUri, onProgress);
+    const { notes, metadata, notePositions, processedImageUri } = await this.processImage(imageUri, onProgress);
 
-    // Get image dimensions for cursor positioning
-    let imageWidth = 1400;
-    let imageHeight = 1000;
-    try {
-      const { Image } = require('react-native');
-      await new Promise((resolve) => {
-        Image.getSize(
-          imageUri,
-          (w, h) => {
-            imageWidth = w;
-            imageHeight = h;
-            resolve();
-          },
-          () => resolve()
-        );
-      });
-    } catch (e) {
-      console.warn('Could not get image dimensions:', e.message);
-    }
-
-    // ─── Use real positions from .omr if available ───
+    // When we have a preprocessed image + real .omr positions, use the .omr
+    // image dimensions directly (the preprocessed image IS what Audiveris saw).
+    // Otherwise fall back to measuring the original camera photo.
     const hasRealPositions = notePositions && notePositions.heads && notePositions.heads.length > 0
       && notePositions.systems && notePositions.systems.length > 0;
+
+    let imageWidth = 1400;
+    let imageHeight = 1000;
+
+    if (hasRealPositions && processedImageUri) {
+      // Use .omr dimensions — they match the preprocessed image exactly
+      imageWidth = notePositions.imageWidth || 1400;
+      imageHeight = notePositions.imageHeight || 1000;
+      console.log(`📐 Using .omr image dimensions: ${imageWidth}×${imageHeight}`);
+    } else {
+      // Fallback: measure the original camera photo
+      try {
+        const { Image } = require('react-native');
+        await new Promise((resolve) => {
+          Image.getSize(
+            imageUri,
+            (w, h) => { imageWidth = w; imageHeight = h; resolve(); },
+            () => resolve()
+          );
+        });
+      } catch (e) {
+        console.warn('Could not get image dimensions:', e.message);
+      }
+    }
 
     let systemBounds = [];
     let staffGroups = [];
@@ -299,9 +326,6 @@ class AudiverisServiceClass {
       const measureToSystem = {};   // measureNum → systemIndex
       const measureRanges = {};     // measureNum → { left, right }
       const omrImgW = notePositions.imageWidth || 1;
-      const omrImgH = notePositions.imageHeight || 1;
-      const scaleX = imageWidth / omrImgW;
-      const scaleY = imageHeight / omrImgH;
 
       for (const sys of notePositions.systems) {
         for (const m of sys.measures) {
@@ -354,26 +378,20 @@ class AudiverisServiceClass {
           const uniqueXClusters = _clusterByX(heads, (omrImgW || 1) * 0.02);
 
           if (uniqueBeats.length === uniqueXClusters.length) {
-            // Perfect 1:1 beat→cluster match
+            // Perfect 1:1 beat→cluster match — use .omr head positions directly
             for (let bi = 0; bi < uniqueBeats.length; bi++) {
               const beatNotes = nonRests.filter(n => n.beatOffset === uniqueBeats[bi]);
               const cluster = uniqueXClusters[bi];
+              // Use absolute .omr pixel coordinates directly (no ratio mapping)
               const clusterCenterX = cluster.reduce((s, h) => s + h.x + h.w / 2, 0) / cluster.length;
 
-              // Scale .omr x to original image x (proportional)
-              const ratio = (clusterCenterX - (range?.left || 0)) / Math.max(1, (range?.right || omrImgW) - (range?.left || 0));
-              const sysData = notePositions.systems[sysIdx];
-              const sysLeft = (sysData?.left || 0) * scaleX;
-              const sysRight = (sysData?.right || omrImgW) * scaleX;
-              const imgX = sysLeft + ratio * (sysRight - sysLeft);
-
               for (const note of beatNotes) {
-                note.x = imgX;
+                note.x = clusterCenterX;
                 // Set Y from closest matching .omr head in this cluster
                 const headForNote = cluster.length === 1 ? cluster[0]
                   : cluster.reduce((best, h) => (!best || Math.abs(h.pitch - (note.omrPitch || 0)) < Math.abs(best.pitch - (note.omrPitch || 0))) ? h : best, null);
                 if (headForNote) {
-                  note.y = (headForNote.y + headForNote.h / 2) * scaleY;
+                  note.y = headForNote.y + headForNote.h / 2;
                   note._hasRealY = true;
                 }
               }
@@ -403,8 +421,8 @@ class AudiverisServiceClass {
           if (sysData && sysData.staffs && sysData.staffs.length > 0) {
             const staffLocal = (note.staffIndex || 0) % sysData.staffs.length;
             const staff = sysData.staffs[staffLocal];
-            note.y = staff ? ((staff.top + staff.bottom) / 2) * scaleY
-                          : ((sysData.top + sysData.bottom) / 2) * scaleY;
+            note.y = staff ? (staff.top + staff.bottom) / 2
+                          : (sysData.top + sysData.bottom) / 2;
           } else {
             note.y = imageHeight * ((sysIdx + 0.5) / systemCount);
           }
@@ -418,16 +436,16 @@ class AudiverisServiceClass {
       // ── Build system bounds using REAL .omr system positions ──
       for (let s = 0; s < systemCount; s++) {
         const sysData = notePositions.systems[s];
-        const top = sysData ? sysData.top * scaleY : (s / systemCount) * imageHeight;
-        const bottom = sysData ? sysData.bottom * scaleY : ((s + 1) / systemCount) * imageHeight;
+        const top = sysData ? sysData.top : (s / systemCount) * imageHeight;
+        const bottom = sysData ? sysData.bottom : ((s + 1) / systemCount) * imageHeight;
         const numStaffs = sysData?.staffs?.length || 1;
         const staffIndices = Array.from({ length: numStaffs }, (_, i) => s * numStaffs + i);
 
         systemBounds.push({ top, bottom, staffIndices });
         if (sysData?.staffs) {
           for (const staff of sysData.staffs) {
-            const staffTop = staff.top * scaleY;
-            const spacing = (staff.bottom - staff.top) * scaleY / 4;
+            const staffTop = staff.top;
+            const spacing = (staff.bottom - staff.top) / 4;
             staffGroups.push(Array.from({ length: 5 }, (_, i) => staffTop + i * spacing));
           }
         } else {
@@ -506,6 +524,7 @@ class AudiverisServiceClass {
       notes: allEvents,
       staves: metadata.staves || 2,
       measures: [],
+      processedImageUri: processedImageUri || null,
       metadata: {
         imageWidth,
         imageHeight,

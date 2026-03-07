@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import tempfile
 import zipfile
+import base64
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -425,10 +426,20 @@ async def process_image(file: UploadFile = File(...)):
         else:
             print(f"[{job_id}] No .omr file found in output")
 
-        # Return JSON with both MusicXML and positions
+        # Encode preprocessed image as base64 to return to client
+        processed_b64 = None
+        try:
+            with open(processed_file, "rb") as pf:
+                processed_b64 = base64.b64encode(pf.read()).decode("ascii")
+            print(f"[{job_id}] Preprocessed image: {len(processed_b64)} chars base64")
+        except Exception as e:
+            print(f"[{job_id}] ⚠️ Could not encode preprocessed image: {e}")
+
+        # Return JSON with MusicXML, positions, and preprocessed image
         return JSONResponse(content={
             "musicxml": musicxml_content,
             "notePositions": note_positions,
+            "processedImage": processed_b64,
         })
 
     except subprocess.TimeoutExpired:

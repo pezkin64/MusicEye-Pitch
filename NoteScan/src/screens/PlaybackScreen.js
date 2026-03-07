@@ -535,7 +535,7 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
       {/* Score + cursor */}
       <View style={styles.viewerArea}>
         <PlaybackVisualization
-          imageUri={imageUri}
+          imageUri={scoreData?.processedImageUri || imageUri}
           currentTime={playbackTime}
           totalDuration={totalDuration}
           isPlaying={isPlaying}
