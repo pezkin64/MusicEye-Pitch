@@ -300,6 +300,8 @@ class AudiverisServiceClass {
       const measureRanges = {};     // measureNum → { left, right }
       const omrImgW = notePositions.imageWidth || 1;
       const omrImgH = notePositions.imageHeight || 1;
+      const scaleX = imageWidth / omrImgW;
+      const scaleY = imageHeight / omrImgH;
 
       for (const sys of notePositions.systems) {
         for (const m of sys.measures) {
@@ -361,12 +363,19 @@ class AudiverisServiceClass {
               // Scale .omr x to original image x (proportional)
               const ratio = (clusterCenterX - (range?.left || 0)) / Math.max(1, (range?.right || omrImgW) - (range?.left || 0));
               const sysData = notePositions.systems[sysIdx];
-              const sysLeft = (sysData?.left || 0) / omrImgW * imageWidth;
-              const sysRight = (sysData?.right || omrImgW) / omrImgW * imageWidth;
+              const sysLeft = (sysData?.left || 0) * scaleX;
+              const sysRight = (sysData?.right || omrImgW) * scaleX;
               const imgX = sysLeft + ratio * (sysRight - sysLeft);
 
               for (const note of beatNotes) {
                 note.x = imgX;
+                // Set Y from closest matching .omr head in this cluster
+                const headForNote = cluster.length === 1 ? cluster[0]
+                  : cluster.reduce((best, h) => (!best || Math.abs(h.pitch - (note.omrPitch || 0)) < Math.abs(best.pitch - (note.omrPitch || 0))) ? h : best, null);
+                if (headForNote) {
+                  note.y = (headForNote.y + headForNote.h / 2) * scaleY;
+                  note._hasRealY = true;
+                }
               }
             }
           } else {
@@ -385,35 +394,44 @@ class AudiverisServiceClass {
         }
       }
 
-      // ── Assign y positions ──
-      const systemHeight = imageHeight / systemCount;
+      // ── Assign y positions using real .omr data ──
       for (const note of notes) {
-        const sysIdx = note.systemIndex || 0;
-        const systemMid = sysIdx * systemHeight + systemHeight / 2;
-        const staffOffset = note.staffIndex % 2 === 0 ? -systemHeight * 0.15 : systemHeight * 0.15;
-        note.y = systemMid + staffOffset;
-
+        if (!note._hasRealY) {
+          // Fallback: use real staff center from .omr system data
+          const sysIdx = note.systemIndex || 0;
+          const sysData = notePositions.systems[sysIdx];
+          if (sysData && sysData.staffs && sysData.staffs.length > 0) {
+            const staffLocal = (note.staffIndex || 0) % sysData.staffs.length;
+            const staff = sysData.staffs[staffLocal];
+            note.y = staff ? ((staff.top + staff.bottom) / 2) * scaleY
+                          : ((sysData.top + sysData.bottom) / 2) * scaleY;
+          } else {
+            note.y = imageHeight * ((sysIdx + 0.5) / systemCount);
+          }
+        }
         // Ensure x is set (fallback for any unmapped notes)
         if (typeof note.x !== 'number' || !Number.isFinite(note.x)) {
           note.x = imageWidth * 0.1;
         }
       }
 
-      // ── Build system bounds using real system data ──
+      // ── Build system bounds using REAL .omr system positions ──
       for (let s = 0; s < systemCount; s++) {
-        const top = s * systemHeight + systemHeight * 0.1;
-        const bottom = (s + 1) * systemHeight - systemHeight * 0.1;
         const sysData = notePositions.systems[s];
+        const top = sysData ? sysData.top * scaleY : (s / systemCount) * imageHeight;
+        const bottom = sysData ? sysData.bottom * scaleY : ((s + 1) / systemCount) * imageHeight;
         const numStaffs = sysData?.staffs?.length || 1;
         const staffIndices = Array.from({ length: numStaffs }, (_, i) => s * numStaffs + i);
 
         systemBounds.push({ top, bottom, staffIndices });
-        for (const si of staffIndices) {
-          const mid = (top + bottom) / 2;
-          const offset = (si - staffIndices[0]) / Math.max(1, staffIndices.length - 1);
-          const staffTop = top + offset * (bottom - top) * 0.6;
-          const spacing = (bottom - top) * 0.08;
-          staffGroups.push(Array.from({ length: 5 }, (_, i) => staffTop + i * spacing));
+        if (sysData?.staffs) {
+          for (const staff of sysData.staffs) {
+            const staffTop = staff.top * scaleY;
+            const spacing = (staff.bottom - staff.top) * scaleY / 4;
+            staffGroups.push(Array.from({ length: 5 }, (_, i) => staffTop + i * spacing));
+          }
+        } else {
+          staffGroups.push(Array.from({ length: 5 }, (_, i) => top + i * ((bottom - top) / 4)));
         }
       }
     } else {

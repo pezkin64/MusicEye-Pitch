@@ -283,9 +283,12 @@ export const PlaybackVisualization = ({
                   const nImgX = xRange.min + note.ratio * rangeSpan;
                   const nX = nImgX * zoomScale;
                   const noteSys = systemBounds[note.systemIndex];
-                  const nY = noteSys
-                    ? ((noteSys.top + noteSys.bottom) / 2) * zoomScale
-                    : cursorTop + cursorHeight / 2;
+                  // Use real per-note Y when available, fall back to system center
+                  const nY = (typeof note.y === 'number' && Number.isFinite(note.y))
+                    ? note.y * zoomScale
+                    : noteSys
+                      ? ((noteSys.top + noteSys.bottom) / 2) * zoomScale
+                      : cursorTop + cursorHeight / 2;
 
                   return (
                     <Animated.View

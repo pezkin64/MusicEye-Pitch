@@ -351,7 +351,7 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
     const positions = timingMap.map((entry) => {
       const ratio = (entry.x - minX) / rangeX;
       const sysIdx = staffToSystem.get(entry.staffIndex) ?? 0;
-      return { time: entry.time, ratio: Math.max(0, Math.min(1, ratio)), systemIndex: sysIdx };
+      return { time: entry.time, ratio: Math.max(0, Math.min(1, ratio)), systemIndex: sysIdx, y: entry.y };
     });
 
     setCursorInfo({
