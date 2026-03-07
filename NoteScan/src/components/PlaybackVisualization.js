@@ -79,11 +79,15 @@ export const PlaybackVisualization = ({
   // ─── Smooth lerp between current and next position ───
   let activeRatio = activeEntry?.ratio ?? 0;
   if (activeEntry && nextEntry) {
-    const elapsed = currentTime - activeEntry.time;
-    const span = nextEntry.time - activeEntry.time;
-    if (span > 0) {
-      const t = Math.max(0, Math.min(1, elapsed / span));
-      activeRatio = activeEntry.ratio + t * (nextEntry.ratio - activeEntry.ratio);
+    // Don't interpolate across system boundaries — cursor would slide backwards
+    const sameSystem = activeEntry.systemIndex === nextEntry.systemIndex;
+    if (sameSystem) {
+      const elapsed = currentTime - activeEntry.time;
+      const span = nextEntry.time - activeEntry.time;
+      if (span > 0) {
+        const t = Math.max(0, Math.min(1, elapsed / span));
+        activeRatio = activeEntry.ratio + t * (nextEntry.ratio - activeEntry.ratio);
+      }
     }
   }
 

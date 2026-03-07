@@ -14,6 +14,7 @@ export class AudioPlaybackService {
   static isPlaying = false;
   static _tempFileUri = null;
   static _soundFontReady = false;
+  static _renderTempo = 120;
 
   /* ─── SoundFont loading ─── */
 
@@ -359,7 +360,7 @@ export class AudioPlaybackService {
   static async preRenderVoiceTracks(notes, tempo = 120) {
     const sampleRate = 44100;
     const secondsPerBeat = 60 / tempo;
-    const renderKey = `${this.getActivePresetIndex()}_${tempo}`;
+    const renderKey = `${this.getActivePresetIndex()}`;
 
     const getBeats = (n) => n.tiedBeats || n.durationBeats || ({
       whole: 4, half: 2, quarter: 1, eighth: 0.5, sixteenth: 0.25,
@@ -444,6 +445,7 @@ export class AudioPlaybackService {
     this._voiceTimingMap = timingMap;
     this._voiceTotalDuration = totalDuration;
     this._voiceRenderKey = renderKey;
+    this._renderTempo = tempo;
 
     const counts = voices.map(v => {
       let peak = 0;
@@ -499,9 +501,10 @@ export class AudioPlaybackService {
 
   /**
    * Check if the voice tracks are pre-rendered and current.
+   * Tempo is not part of the key — we use rate adjustment instead.
    */
-  static hasPreRenderedTracks(tempo) {
-    const expectedKey = `${this.getActivePresetIndex()}_${tempo}`;
+  static hasPreRenderedTracks() {
+    const expectedKey = `${this.getActivePresetIndex()}`;
     return this._voiceBuffers != null && this._voiceRenderKey === expectedKey;
   }
 
@@ -651,10 +654,11 @@ export class AudioPlaybackService {
   }
 
   /**
-   * Play combined audio. Calls `onPositionUpdate(timeSec)` ~20×/sec.
+   * Play combined audio. Calls `onPositionUpdate(timeSec)` ~60×/sec.
    * Calls `onFinished()` when playback completes.
+   * @param {number} rate - playback rate (1.0 = normal speed)
    */
-  static async play(fileUri, onPositionUpdate, onFinished) {
+  static async play(fileUri, onPositionUpdate, onFinished, rate = 1.0) {
     await this.stop();
 
     if (!fileUri) {
@@ -664,12 +668,12 @@ export class AudioPlaybackService {
     }
 
     this._tempFileUri = fileUri;
-    console.log(`▶️ play(): loading ${fileUri}`);
+    console.log(`▶️ play(): loading ${fileUri}, rate=${rate.toFixed(2)}`);
 
     try {
       const { sound, status: initialStatus } = await Audio.Sound.createAsync(
         { uri: fileUri },
-        { shouldPlay: true, progressUpdateIntervalMillis: 50 }
+        { shouldPlay: true, progressUpdateIntervalMillis: 16, rate, shouldCorrectPitch: true }
       );
 
       console.log(`▶️ play(): sound created, duration=${initialStatus.durationMillis}ms, isPlaying=${initialStatus.isPlaying}`);
@@ -700,6 +704,22 @@ export class AudioPlaybackService {
       this.isPlaying = false;
       if (onFinished) onFinished();
     }
+  }
+
+  /** Instant tempo change via playback rate — no re-render needed. */
+  static async setPlaybackRate(rate) {
+    if (this.sound) {
+      try {
+        await this.sound.setRateAsync(rate, true);
+      } catch (e) {
+        console.warn('setPlaybackRate error:', e);
+      }
+    }
+  }
+
+  /** Return the tempo used when audio was last rendered. */
+  static getRenderTempo() {
+    return this._renderTempo;
   }
 
   static async pause() {

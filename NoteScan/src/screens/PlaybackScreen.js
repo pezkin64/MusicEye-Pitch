@@ -67,6 +67,7 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
 
   const audioFileUriRef = useRef(null);
   const prepareIdRef = useRef(0);
+  const referenceTempoRef = useRef(120);
 
   const [voiceSelection, setVoiceSelection] = useState({
     Soprano: true,
@@ -137,7 +138,9 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
     });
   }, [processScore]);
 
-  /* ── Phase 1: Pre-render voice tracks when scoreData, tempo, or instrument changes ── */
+  /* ── Phase 1: Pre-render voice tracks when scoreData or instrument changes ── */
+  /* Audio is rendered once at a fixed reference tempo (120 BPM).                */
+  /* Tempo changes are handled instantly via playback rate adjustment.           */
   useEffect(() => {
     if (!scoreData) return;
     let cancelled = false;
@@ -149,9 +152,11 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
       setPreparing(true);
       try {
         AudioPlaybackService.selectPreset(selectedPresetIndex);
-        console.log(`🎹 preRender [${myId}]: rendering 4 voice tracks...`);
+        const renderTempo = 120;
+        referenceTempoRef.current = renderTempo;
+        console.log(`🎹 preRender [${myId}]: rendering 4 voice tracks at ${renderTempo} BPM (reference)...`);
 
-        const result = await AudioPlaybackService.preRenderVoiceTracks(scoreData.notes, tempo);
+        const result = await AudioPlaybackService.preRenderVoiceTracks(scoreData.notes, renderTempo);
 
         if (cancelled || myId !== prepareIdRef.current) return;
 
@@ -184,12 +189,20 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
       }
       AudioPlaybackService.isPlaying = false;
     };
-  }, [scoreData, tempo, selectedPresetIndex]);
+  }, [scoreData, selectedPresetIndex]);
+
+  /* ── Instant tempo adjustment via playback rate (no re-render) ── */
+  useEffect(() => {
+    const refTempo = referenceTempoRef.current;
+    if (refTempo <= 0) return;
+    const rate = tempo / refTempo;
+    AudioPlaybackService.setPlaybackRate(rate);
+  }, [tempo]);
 
   /* ── Phase 2: Quick mix when voice selection changes (no re-render needed) ── */
   useEffect(() => {
     if (!scoreData) return;
-    if (!AudioPlaybackService.hasPreRenderedTracks(tempo)) return; // not ready yet
+    if (!AudioPlaybackService.hasPreRenderedTracks()) return; // not ready yet
 
     let cancelled = false;
     const myId = ++prepareIdRef.current;
@@ -367,6 +380,8 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
     }
 
     if (isPaused) {
+      const rate = tempo / referenceTempoRef.current;
+      await AudioPlaybackService.setPlaybackRate(rate);
       await AudioPlaybackService.resume();
       setIsPlaying(true);
       setIsPaused(false);
@@ -378,7 +393,8 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
     setPlaybackTime(0);
 
     const fileUri = audioFileUriRef.current;
-    console.log(`▶️ handlePlay: playing ${fileUri}`);
+    const rate = tempo / referenceTempoRef.current;
+    console.log(`▶️ handlePlay: playing ${fileUri} at rate=${rate.toFixed(2)}`);
 
     try {
       await AudioPlaybackService.play(
@@ -388,7 +404,8 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
           setIsPlaying(false);
           setIsPaused(false);
           setPlaybackTime(totalDuration);
-        }
+        },
+        rate
       );
     } catch (e) {
       console.error('Play error:', e);
@@ -547,7 +564,7 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
       </View>
 
       {/* Tempo slider drawer */}
-      {showTempoSlider && !isPlaying && (
+      {showTempoSlider && (
         <View style={styles.tempoDrawer}>
           <View style={styles.tempoDrawerRow}>
             <Text style={styles.tempoDrawerLabel}>Tempo</Text>
@@ -626,8 +643,7 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
           {/* Tempo */}
           <Pressable
             style={({ pressed }) => [styles.zoomPill, showTempoSlider && { borderColor: barPalette.accent }, pressed && styles.pressedPill]}
-            onPress={() => !isPlaying && setShowTempoSlider((v) => !v)}
-            disabled={isPlaying}
+            onPress={() => setShowTempoSlider((v) => !v)}
           >
             <Feather name="activity" size={12} color={barPalette.barTextMuted} />
             <Text style={styles.pillText}>{tempo} BPM</Text>
