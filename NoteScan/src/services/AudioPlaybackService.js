@@ -201,18 +201,37 @@ export class AudioPlaybackService {
     return this._audioCtx;
   }
 
-  /** Convert a Float32Array waveform → AudioBuffer (cached). */
-  static _getAudioBuffer(midiNote, durationSec, velocity = 100) {
-    const cacheKey = `${midiNote}_${velocity}_${Math.round(durationSec * 1000)}`;
-    if (this._audioBufferCache.has(cacheKey)) return this._audioBufferCache.get(cacheKey);
-
-    const samples = this.generatePianoNote(midiNote, durationSec, velocity);
+  /**
+   * Pre-generate AudioBuffers for all unique (midiNote, velocity) combos.
+   * Renders each at the longest needed duration (slowest tempo = 40 BPM)
+   * so the same buffer works at any tempo — schedulePlayback just truncates
+   * via source.stop().
+   */
+  static _precacheAudioBuffers() {
+    if (!this._noteEvents || this._noteEvents.length === 0) return;
     const ctx = this._getAudioContext();
-    const buf = ctx.createBuffer(1, samples.length, 44100);
-    const channel = buf.getChannelData(0);
-    channel.set(samples);
-    this._audioBufferCache.set(cacheKey, buf);
-    return buf;
+    const spbSlow = 60 / 40; // seconds-per-beat at 40 BPM (slider minimum)
+
+    // Find max durationBeats for each unique (midiNote, velocity)
+    const noteMaxBeats = new Map();
+    for (const evt of this._noteEvents) {
+      const key = `${evt.midiNote}_${evt.velocity}`;
+      const cur = noteMaxBeats.get(key) || 0;
+      if (evt.durationBeats > cur) noteMaxBeats.set(key, evt.durationBeats);
+    }
+
+    // Generate AudioBuffer for each unique note at max possible duration
+    for (const [key, maxBeats] of noteMaxBeats) {
+      if (this._audioBufferCache.has(key)) continue;
+      const [midi, vel] = key.split('_').map(Number);
+      const maxSec = maxBeats * spbSlow;
+      const samples = this.generatePianoNote(midi, maxSec, vel);
+      const buf = ctx.createBuffer(1, samples.length, 44100);
+      buf.getChannelData(0).set(samples);
+      this._audioBufferCache.set(key, buf);
+    }
+
+    console.log(`🎹 Pre-cached ${noteMaxBeats.size} AudioBuffers for ${this._noteEvents.length} events`);
   }
 
   /**
@@ -295,6 +314,9 @@ export class AudioPlaybackService {
     this._timingBeatData = timingBeatData;
     this._totalBeats = totalBeats;
 
+    // Pre-generate all AudioBuffers so play/tempo-change is instant
+    this._precacheAudioBuffers();
+
     console.log(`🎵 Prepared ${noteEvents.length} note events, ${totalBeats.toFixed(1)} total beats`);
     return { noteEvents, timingBeatData, totalBeats };
   }
@@ -337,12 +359,28 @@ export class AudioPlaybackService {
       if (noteTime < startOffsetSec) continue; // skip past notes when seeking
 
       const durSec = evt.durationBeats * spb;
-      const audioBuf = this._getAudioBuffer(evt.midiNote, durSec, evt.velocity);
+      const startAt = now + noteTime - startOffsetSec;
+      const stopAt = startAt + durSec;
+
+      // Lookup pre-cached buffer (duration-independent, keyed by midiNote_velocity)
+      const cacheKey = `${evt.midiNote}_${evt.velocity}`;
+      const audioBuf = this._audioBufferCache.get(cacheKey);
+      if (!audioBuf) continue;
+
+      // GainNode per note: 5ms anti-click fade at truncation point
+      const gain = ctx.createGain();
+      gain.connect(ctx.destination);
+      if (durSec > 0.01) {
+        gain.gain.setValueAtTime(1, startAt);
+        gain.gain.setValueAtTime(1, Math.max(startAt, stopAt - 0.005));
+        gain.gain.linearRampToValueAtTime(0, stopAt);
+      }
 
       const source = ctx.createBufferSource();
       source.buffer = audioBuf;
-      source.connect(ctx.destination);
-      source.start(now + noteTime - startOffsetSec);
+      source.connect(gain);
+      source.start(startAt);
+      source.stop(stopAt + 0.01); // slightly past fade to let it complete
       sources.push(source);
     }
 
