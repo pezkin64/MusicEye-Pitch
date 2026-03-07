@@ -68,6 +68,7 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
   const audioFileUriRef = useRef(null);
   const prepareIdRef = useRef(0);
   const referenceTempoRef = useRef(120);
+  const tempoRenderTimerRef = useRef(null);
 
   const [voiceSelection, setVoiceSelection] = useState({
     Soprano: true,
@@ -191,12 +192,25 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
     };
   }, [scoreData, selectedPresetIndex]);
 
-  /* ── Instant tempo adjustment via playback rate (no re-render) ── */
+  /* ── Tempo change: apply rate immediately, then re-render in background ── */
   useEffect(() => {
     const refTempo = referenceTempoRef.current;
     if (refTempo <= 0) return;
+    // Instant rate-based preview (may have quality loss at extreme ratios)
     const rate = tempo / refTempo;
     AudioPlaybackService.setPlaybackRate(rate);
+
+    // Schedule background re-render at the actual tempo for full quality
+    if (tempoRenderTimerRef.current) clearTimeout(tempoRenderTimerRef.current);
+    if (refTempo !== tempo) {
+      tempoRenderTimerRef.current = setTimeout(() => {
+        reRenderAtTempo(tempo);
+      }, 400);
+    }
+
+    return () => {
+      if (tempoRenderTimerRef.current) clearTimeout(tempoRenderTimerRef.current);
+    };
   }, [tempo]);
 
   /* ── Phase 2: Quick mix when voice selection changes (no re-render needed) ── */
@@ -225,6 +239,68 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
 
     return () => { cancelled = true; };
   }, [voiceSelection]);
+
+  /**
+   * Background re-render at the actual tempo for full audio quality.
+   * Called automatically after tempo changes settle (debounced 400ms).
+   */
+  const reRenderAtTempo = async (newTempo) => {
+    if (!scoreData) return;
+    if (referenceTempoRef.current === newTempo) return;
+
+    const myId = ++prepareIdRef.current;
+    try {
+      AudioPlaybackService.selectPreset(selectedPresetIndex);
+      const result = await AudioPlaybackService.preRenderVoiceTracks(
+        scoreData.notes, newTempo
+      );
+      if (myId !== prepareIdRef.current) return;
+      if (!result) return;
+
+      referenceTempoRef.current = newTempo;
+
+      const { fileUri, timingMap, totalDuration: dur } =
+        await AudioPlaybackService.mixVoiceTracks(voiceSelection);
+      if (myId !== prepareIdRef.current) return;
+
+      const wasPlaying = isPlaying;
+      const wasPaused = isPaused;
+
+      // Stop current sound so next play uses the new file
+      if (AudioPlaybackService.sound) {
+        try {
+          await AudioPlaybackService.sound.stopAsync();
+          await AudioPlaybackService.sound.unloadAsync();
+        } catch (_) {}
+        AudioPlaybackService.sound = null;
+      }
+      AudioPlaybackService.isPlaying = false;
+
+      audioFileUriRef.current = fileUri;
+      setTotalDuration(dur);
+      buildCursorInfo(timingMap);
+
+      // If was playing, auto-restart at rate=1.0
+      if (wasPlaying && !wasPaused) {
+        setIsPlaying(true);
+        setIsPaused(false);
+        setPlaybackTime(0);
+        await AudioPlaybackService.play(
+          fileUri,
+          (timeSec) => setPlaybackTime(timeSec),
+          () => { setIsPlaying(false); setIsPaused(false); setPlaybackTime(dur); },
+          1.0
+        );
+      } else {
+        setIsPlaying(false);
+        setIsPaused(false);
+      }
+
+      console.log(`✅ Tempo re-render: ${newTempo} BPM (rate → 1.0)`);
+    } catch (e) {
+      console.warn('Tempo re-render error:', e);
+    }
+  };
 
   /** Mix pre-rendered voice buffers into a single WAV based on current voiceSelection */
   const doMix = async (myId) => {
@@ -576,6 +652,10 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
             maximumValue={240}
             step={1}
             value={tempo}
+            onValueChange={(v) => {
+              const rate = Math.round(v) / referenceTempoRef.current;
+              AudioPlaybackService.setPlaybackRate(rate);
+            }}
             onSlidingComplete={(v) => setTempo(Math.round(v))}
             minimumTrackTintColor={barPalette.accent}
             maximumTrackTintColor={barPalette.barBorder}
