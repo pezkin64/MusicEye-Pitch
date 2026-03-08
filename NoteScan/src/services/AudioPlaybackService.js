@@ -313,9 +313,6 @@ export class AudioPlaybackService {
       totalBeats = lastBo + maxDur;
     }
 
-    // Sort by beatOffset for O(log N) early-exit in chunk mixer
-    noteEvents.sort((a, b) => a.beatOffset - b.beatOffset);
-
     this._noteEvents = noteEvents;
     this._timingBeatData = timingBeatData;
     this._totalBeats = totalBeats;
@@ -355,17 +352,14 @@ export class AudioPlaybackService {
     const t0 = startSample / sampleRate;
     const t1 = (startSample + chunkSize) / sampleRate;
 
-    // Events are sorted by beatOffset — break early when past chunk window
     for (const evt of this._noteEvents) {
-      const noteStart = evt.beatOffset * spb;
-      if (noteStart >= t1) break; // all remaining events start after chunk
-
       if (this._voiceSelection && !this._voiceSelection[evt.voice]) continue;
 
+      const noteStart = evt.beatOffset * spb;
       const noteDur = evt.durationBeats * spb;
       const noteEnd = noteStart + noteDur;
 
-      if (noteEnd <= t0) continue; // this event ended before chunk
+      if (noteEnd <= t0 || noteStart >= t1) continue;
 
       const cacheKey = `${evt.midiNote}_${evt.velocity}`;
       const waveform = this._noteWaveformCache.get(cacheKey);
@@ -401,7 +395,7 @@ export class AudioPlaybackService {
    * Enqueue mixed chunks to keep the AudioBufferQueueSourceNode fed.
    * Maintains _LOOKAHEAD_SEC of audio queued ahead of current playback position.
    */
-  static _feedChunks(maxChunks) {
+  static _feedChunks() {
     if (!this._queueNode || !this._noteEvents) return;
 
     const sampleRate = 44100;
@@ -414,11 +408,7 @@ export class AudioPlaybackService {
     const lookaheadSamples = Math.floor(this._LOOKAHEAD_SEC * sampleRate);
     const targetSample = Math.min(currentSample + lookaheadSamples, totalSamples);
 
-    // Limit how many chunks we mix per call to avoid blocking JS thread
-    const maxChunksPerCall = maxChunks || 20;
-    let chunksEnqueued = 0;
-
-    while (this._mixCursor < targetSample && chunksEnqueued < maxChunksPerCall) {
+    while (this._mixCursor < targetSample) {
       const remaining = totalSamples - this._mixCursor;
       const size = Math.min(this._CHUNK_SIZE, remaining);
       const chunk = this._mixChunk(this._mixCursor, size);
@@ -427,7 +417,6 @@ export class AudioPlaybackService {
       buf.getChannelData(0).set(chunk);
       this._queueNode.enqueueBuffer(buf);
       this._mixCursor += size;
-      chunksEnqueued++;
     }
 
     if (this._mixCursor >= totalSamples) {
@@ -516,12 +505,7 @@ export class AudioPlaybackService {
       this._playStartOffset = newElapsed;
       this._voiceSelection = voiceSelection;
 
-      // Feed only 2 chunks synchronously (~186ms) to prevent audio gap;
-      // the feed timer will fill the rest asynchronously
-      this._feedChunks(2);
-
-      // Restart position tracking with updated timing
-      this._startPositionTracking(totalDuration - newElapsed);
+      this._feedChunks();
     }
 
     this._currentTempo = newTempo;

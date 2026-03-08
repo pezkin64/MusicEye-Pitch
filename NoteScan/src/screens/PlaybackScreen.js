@@ -70,7 +70,6 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
   const prepareIdRef = useRef(0);
   const renderTempoRef = useRef(120);
   const webAudioReadyRef = useRef(false);
-  const tempoThrottleRef = useRef(0); // timestamp of last applied tempo change
 
   const [voiceSelection, setVoiceSelection] = useState({
     Soprano: true,
@@ -281,19 +280,20 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
   /**
    * Change tempo — instant for Web Audio, re-render for legacy.
    */
-  const reRenderForTempo = async (newTempo, { rebuildCursor = true } = {}) => {
+  const reRenderForTempo = async (newTempo) => {
     if (!scoreData) return;
     if (newTempo === renderTempoRef.current) return;
     renderTempoRef.current = newTempo;
 
     if (webAudioReadyRef.current) {
-      // Web Audio path: instant tempo change (clear queue + re-feed)
+      // Web Audio path: instant tempo change (just reschedule events)
       const result = AudioPlaybackService.changeTempo(newTempo, voiceSelection);
       if (result) {
         setTotalDuration(result.totalDuration);
-        if (rebuildCursor) buildCursorInfo(result.timingMap);
-        // Don't reset playbackTime — position tracking updates it continuously
+        buildCursorInfo(result.timingMap);
+        setPlaybackTime(0);
       }
+      console.log(`✅ Instant tempo change: ${newTempo} BPM`);
       return;
     }
 
@@ -635,22 +635,17 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
             onValueChange={(v) => {
               const bpm = Math.round(v);
               setSliderTempo(bpm);
-              // Throttle: apply tempo change at most every 80ms during drag
+              // Web Audio: instant live tempo change while dragging
               if (webAudioReadyRef.current) {
-                const now = Date.now();
-                if (now - tempoThrottleRef.current >= 80) {
-                  tempoThrottleRef.current = now;
-                  setTempo(bpm);
-                  // Skip cursor rebuild during drag — done on slidingComplete
-                  reRenderForTempo(bpm, { rebuildCursor: false });
-                }
+                setTempo(bpm);
+                reRenderForTempo(bpm);
               }
             }}
             onSlidingComplete={(v) => {
               const bpm = Math.round(v);
               setSliderTempo(bpm);
               setTempo(bpm);
-              reRenderForTempo(bpm, { rebuildCursor: true });
+              reRenderForTempo(bpm);
             }}
             minimumTrackTintColor={barPalette.accent}
             maximumTrackTintColor={barPalette.barBorder}
