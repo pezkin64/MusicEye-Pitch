@@ -8,7 +8,7 @@ import {
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { SvgXml } from 'react-native-svg';
-import { AudiverisService } from '../services/AudiverisService';
+import { OMRSettings } from '../services/OMRSettings';
 
 const logoXml = `
 <svg width="160" height="120" viewBox="0 0 160 120" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -20,15 +20,27 @@ const logoXml = `
 
 export const HomeScreen = ({ onNavigate, onPickFromGallery, onPickFromCamera }) => {
   const [serverStatus, setServerStatus] = useState(null); // null = checking, true = ok, false = down
+  const [engine, setEngine] = useState(OMRSettings.getEngine());
 
   useEffect(() => {
-    checkServer();
+    OMRSettings.load().then(() => {
+      setEngine(OMRSettings.getEngine());
+      checkServer();
+    });
   }, []);
 
   const checkServer = async () => {
     setServerStatus(null);
-    const result = await AudiverisService.checkHealth();
+    const service = OMRSettings.getService();
+    const result = await service.checkHealth();
     setServerStatus(result.ok);
+  };
+
+  const toggleEngine = async () => {
+    const next = engine === 'ondevice' ? 'audiveris' : 'ondevice';
+    await OMRSettings.setEngine(next);
+    setEngine(next);
+    checkServer();
   };
 
   return (
@@ -42,18 +54,20 @@ export const HomeScreen = ({ onNavigate, onPickFromGallery, onPickFromCamera }) 
         </View>
         <Text style={styles.subtitle}>Scan and play sheet music in seconds</Text>
 
-        {/* Server status indicator */}
-        <TouchableOpacity style={styles.statusRow} onPress={checkServer}>
+        {/* Engine / status indicator */}
+        <TouchableOpacity style={styles.statusRow} onPress={toggleEngine}>
           <View style={[
             styles.statusDot,
+            engine === 'ondevice' ? styles.statusOk :
             serverStatus === null ? styles.statusChecking :
             serverStatus ? styles.statusOk : styles.statusDown,
           ]} />
           <Text style={styles.statusText}>
-            {serverStatus === null ? 'Checking server...' :
-             serverStatus ? 'OMR server connected' : 'OMR server unreachable'}
+            {engine === 'ondevice' ? 'On-device engine' :
+             serverStatus === null ? 'Checking server...' :
+             serverStatus ? 'Audiveris server connected' : 'Audiveris server unreachable'}
           </Text>
-          <Feather name="refresh-cw" size={12} color="#6E675E" style={{ marginLeft: 4 }} />
+          <Feather name="repeat" size={12} color="#6E675E" style={{ marginLeft: 4 }} />
         </TouchableOpacity>
       </View>
 

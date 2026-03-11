@@ -323,11 +323,17 @@ async def process_image(file: UploadFile = File(...)):
 
         # Build Audiveris command with quality tuning for camera photos
         # These options make Audiveris more tolerant of imperfect input:
+        #   - poorInputMode: enables aggressive detection for camera photos
         #   - Scale.minInterline: accept narrower staff spacing (phone photos)
-        #   - Sheet.Scale.maxInterline: allow wider spacing too
+        #   - Scale.maxInterline: allow wider spacing too
+        #   - smallHead/smallBeam: detect smaller symbols from phone photos
         quality_options = [
-            "-option", "org.audiveris.omr.sheet.Scale.minInterline=10",
-            "-option", "org.audiveris.omr.sheet.Scale.maxInterline=30",
+            "-option", "org.audiveris.omr.sheet.Scale.minInterline=8",
+            "-option", "org.audiveris.omr.sheet.Scale.maxInterline=40",
+            "-option", "org.audiveris.omr.sheet.ProcessingSwitches.poorInputMode=true",
+            "-option", "org.audiveris.omr.sheet.ProcessingSwitches.keepGrayImages=false",
+            "-option", "org.audiveris.omr.sheet.ProcessingSwitches.smallHeads=true",
+            "-option", "org.audiveris.omr.sheet.ProcessingSwitches.smallBeams=true",
         ]
 
         if AUDIVERIS_BIN:

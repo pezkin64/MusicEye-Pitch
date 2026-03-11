@@ -474,7 +474,7 @@ def _staff_guided_resize(gray, staffs: List[Staff], target: int):
     return resized
 
 
-def _staff_aware_noise_removal(binary, staffs: List[Staff], min_area=10):
+def _staff_aware_noise_removal(binary, staffs: List[Staff], min_area=6):
     """Staff-aware noise removal: keep components near staves, aggressively remove distant ones.
 
     Zemsky insight: real music symbols are always near a staff.
@@ -484,6 +484,9 @@ def _staff_aware_noise_removal(binary, staffs: List[Staff], min_area=10):
     Strategy:
       - Near a staff (within 2× staff height): standard noise filter (min_area)
       - Far from all staves: aggressive noise filter (much larger min_area)
+
+    min_area is kept low (6) to preserve small but important symbols:
+    staccato dots, accent marks, thin flags, and small accidentals.
     """
     h, w = binary.shape[:2]
 
@@ -1082,7 +1085,8 @@ def _smart_binarize(gray):
     h, w = gray.shape[:2]
 
     # Try Sauvola first
-    binary = _sauvola(gray, k=0.15)  # k=0.15 slightly less aggressive than default
+    # k=0.10 preserves thin features (stems, flags, dots) better than higher values
+    binary = _sauvola(gray, k=0.10)
 
     # Validate result: check ink coverage
     total = binary.size
@@ -1237,20 +1241,20 @@ def _adobe_scan_binarize(gray):
 
 
 def _close_gaps(binary):
-    """Morphological close to reconnect small gaps in staff lines,
-    then open to thin bloated lines back to a consistent width."""
-    # Close: bridge tiny horizontal gaps
+    """Morphological close to reconnect small gaps in staff lines.
+
+    Only bridge horizontal gaps — do NOT apply vertical open, which
+    erodes thin stems, flags, dots and beams that Audiveris needs
+    to classify noteheads."""
+    # Close: bridge tiny horizontal gaps in staff lines
     close_k = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 1))
     closed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, close_k)
-    # Open: thin any bloated vertical strokes (prevents line(1,11,13) issue)
-    open_k = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 2))
-    thinned = cv2.morphologyEx(closed, cv2.MORPH_OPEN, open_k)
-    return thinned
     return closed
 
 
-def _remove_noise(binary, min_area=10):
-    """Remove small connected-component specks (salt/pepper, dust)."""
+def _remove_noise(binary, min_area=6):
+    """Remove small connected-component specks (salt/pepper, dust).
+    min_area=6 preserves small musical symbols (dots, thin flags)."""
     inv = cv2.bitwise_not(binary)
     n, labels, stats, _ = cv2.connectedComponentsWithStats(inv, connectivity=8)
     clean = np.full_like(binary, 255)

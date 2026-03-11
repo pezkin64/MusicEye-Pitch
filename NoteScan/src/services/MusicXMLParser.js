@@ -512,12 +512,17 @@ export class MusicXMLParser {
       }
     }
 
+    // Extract tempo from <sound tempo="..."/> (first occurrence = original tempo)
+    const tempoMatch = xml.match(/<sound[^>]*\btempo="([\d.]+)"/);
+    metadata.tempo = tempoMatch ? Math.round(parseFloat(tempoMatch[1])) : null;
+
     console.log(
       `✅ Parsed MusicXML: ${noteCount} notes, ${restCount} rests, ` +
       `${metadata.staves} staves, ${metadata.systems} systems, ` +
       `${metadata.totalMeasures} measures, ${globalBeatOffset} total beats\n` +
       `   Voice distribution: ${Object.entries(voiceCounts).map(([v,c]) => `${v}=${c}`).join(', ')}` +
-      (metadata.noteRange ? `\n   Range: ${metadata.noteRange.low.pitch} – ${metadata.noteRange.high.pitch}` : '')
+      (metadata.noteRange ? `\n   Range: ${metadata.noteRange.low.pitch} – ${metadata.noteRange.high.pitch}` : '') +
+      (metadata.tempo ? `\n   Tempo: ${metadata.tempo} BPM` : '')
     );
 
     return { notes, metadata };

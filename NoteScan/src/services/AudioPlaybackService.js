@@ -1,7 +1,15 @@
 import { Audio } from 'expo-av';
 import { File, Paths } from 'expo-file-system/next';
-import { AudioContext } from 'react-native-audio-api';
 import { SoundFontService } from './SoundFontService';
+
+// react-native-audio-api requires a dev build (native module).
+// Gracefully degrade when running in Expo Go.
+let AudioContext = null;
+try {
+  AudioContext = require('react-native-audio-api').AudioContext;
+} catch (_) {
+  console.warn('[AudioPlaybackService] react-native-audio-api not available – Web Audio disabled, using expo-av fallback');
+}
 
 /**
  * Piano audio synthesis and playback engine.
@@ -201,8 +209,14 @@ export class AudioPlaybackService {
 
   /* ─── Web Audio API engine ─── */
 
-  /** Lazily create / return the shared AudioContext. */
+  /** Returns true if the native Web Audio module is available (dev build only). */
+  static isWebAudioAvailable() {
+    return AudioContext != null;
+  }
+
+  /** Lazily create / return the shared AudioContext. Returns null if Web Audio unavailable. */
   static _getAudioContext() {
+    if (!AudioContext) return null;
     if (!this._audioCtx || this._audioCtx.state === 'closed') {
       this._audioCtx = new AudioContext();
     }
@@ -277,10 +291,13 @@ export class AudioPlaybackService {
       const group = beatMap.get(bo);
       const avgX = group.reduce((s, n) => s + n.x, 0) / group.length;
       const avgY = group.reduce((s, n) => s + n.y, 0) / group.length;
+      // Per-voice positions for voice-aware subtle dots
+      const voicePositions = group.map(n => ({ voice: n.voice, y: n.y, x: n.x }));
       timingBeatData.push({
         beatOffset: bo,
         x: avgX,
         y: avgY,
+        voicePositions,
         staffIndex: group[0].staffIndex,
         systemIndex: group[0].systemIndex,
         isRest: false,
@@ -334,10 +351,26 @@ export class AudioPlaybackService {
       time: t.beatOffset * spb,
       x: t.x,
       y: t.y,
+      voicePositions: t.voicePositions || [],
       staffIndex: t.staffIndex,
       systemIndex: t.systemIndex,
       isRest: t.isRest,
     }));
+  }
+
+  /**
+   * Build a pitch timeline for waveform display.
+   * Returns [{ time, endTime, midiNote, voice }] sorted by time.
+   */
+  static buildPitchTimeline(tempo) {
+    if (!this._noteEvents || !tempo) return [];
+    const spb = 60 / tempo;
+    return this._noteEvents.map(e => ({
+      time: e.beatOffset * spb,
+      endTime: (e.beatOffset + e.durationBeats) * spb,
+      midiNote: e.midiNote,
+      voice: e.voice,
+    })).sort((a, b) => a.time - b.time);
   }
 
   /**
@@ -1078,6 +1111,10 @@ export class AudioPlaybackService {
     this._stopQueue();
 
     const ctx = this._getAudioContext();
+    if (!ctx) {
+      console.warn('[AudioPlaybackService] Web Audio unavailable, cannot play via queue');
+      return;
+    }
     if (ctx.state === 'suspended') ctx.resume();
 
     this._onPositionUpdate = onPositionUpdate;

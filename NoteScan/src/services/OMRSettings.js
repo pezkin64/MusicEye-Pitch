@@ -1,27 +1,56 @@
 /**
  * OMRSettings — Shared settings for OMR engine.
- * Audiveris is the sole engine.
+ * Supports two engines:
+ *   - 'audiveris' — server-based (Audiveris via Docker)
+ *   - 'ondevice'  — on-device rule-based engine (no server needed)
  */
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+const STORAGE_KEY = '@omr_engine';
 
 class OMRSettingsClass {
+  _engine = 'ondevice'; // default to on-device (no server dependency)
+
   /**
    * Get the current engine name.
-   * @returns {'audiveris'}
+   * @returns {'audiveris'|'ondevice'}
    */
   getEngine() {
-    return 'audiveris';
+    return this._engine;
   }
 
-  /** No-op — kept for compatibility. */
-  async load() {}
+  /** Load saved engine preference. */
+  async load() {
+    try {
+      const saved = await AsyncStorage.getItem(STORAGE_KEY);
+      if (saved === 'audiveris' || saved === 'ondevice') {
+        this._engine = saved;
+      }
+    } catch (e) {
+      // ignore — use default
+    }
+  }
 
-  /** No-op — kept for compatibility. */
-  async setEngine(_engine) {}
+  /** Switch engine. */
+  async setEngine(engine) {
+    if (engine === 'audiveris' || engine === 'ondevice') {
+      this._engine = engine;
+      try {
+        await AsyncStorage.setItem(STORAGE_KEY, engine);
+      } catch (e) {
+        // ignore
+      }
+    }
+  }
 
   /**
-   * Get the Audiveris service instance.
+   * Get the active service instance.
    */
   getService() {
+    if (this._engine === 'ondevice') {
+      const { OnDeviceOMRService } = require('./OnDeviceOMRService');
+      return OnDeviceOMRService;
+    }
     const { AudiverisService } = require('./AudiverisService');
     return AudiverisService;
   }

@@ -65,11 +65,13 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
 
   // Cursor data
   const [cursorInfo, setCursorInfo] = useState(null);
+  const [pitchTimeline, setPitchTimeline] = useState([]);
 
   const audioFileUriRef = useRef(null);
   const prepareIdRef = useRef(0);
   const renderTempoRef = useRef(120);
   const webAudioReadyRef = useRef(false);
+  const mixDebounceRef = useRef(null);
 
   const [voiceSelection, setVoiceSelection] = useState({
     Soprano: true,
@@ -161,9 +163,17 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
         AudioPlaybackService.selectPreset(selectedPresetIndex);
         renderTempoRef.current = tempo;
 
+        // Always prepare note events (needed for pitch waveform even on legacy path)
+        AudioPlaybackService.prepareNoteEvents(scoreData.notes);
+
         // Try Web Audio path first (event-based, instant tempo changes)
-        const evtResult = AudioPlaybackService.prepareNoteEvents(scoreData.notes);
+        const evtResult = AudioPlaybackService.isWebAudioAvailable()
+          ? AudioPlaybackService.prepareNoteEvents(scoreData.notes)
+          : null;
         if (cancelled || myId !== prepareIdRef.current) return;
+
+        // Build pitch timeline regardless of audio path
+        setPitchTimeline(AudioPlaybackService.buildPitchTimeline(tempo));
 
         if (evtResult) {
           // Web Audio path: note events prepared, build timing map
@@ -217,18 +227,22 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
     }
     if (!AudioPlaybackService.hasPreRenderedTracks()) return;
 
-    let cancelled = false;
-    const myId = ++prepareIdRef.current;
+    // Debounce legacy mix — wait 300ms after last toggle before re-mixing
+    if (mixDebounceRef.current) clearTimeout(mixDebounceRef.current);
 
-    AudioPlaybackService.stop();
-    setIsPlaying(false);
-    setIsPaused(false);
+    mixDebounceRef.current = setTimeout(() => {
+      const myId = ++prepareIdRef.current;
 
-    doMix(myId).then(() => {
-      if (cancelled) return;
-    });
+      AudioPlaybackService.stop();
+      setIsPlaying(false);
+      setIsPaused(false);
 
-    return () => { cancelled = true; };
+      doMix(myId);
+    }, 150);
+
+    return () => {
+      if (mixDebounceRef.current) clearTimeout(mixDebounceRef.current);
+    };
   }, [voiceSelection]);
 
   /** Mix pre-rendered voice buffers into a single WAV based on current voiceSelection */
@@ -291,6 +305,7 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
       if (result) {
         setTotalDuration(result.totalDuration);
         buildCursorInfo(result.timingMap);
+        setPitchTimeline(AudioPlaybackService.buildPitchTimeline(newTempo));
         setPlaybackTime(0);
       }
       console.log(`✅ Instant tempo change: ${newTempo} BPM`);
@@ -305,6 +320,7 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
 
     setPreparing(true);
     try {
+      setPitchTimeline(AudioPlaybackService.buildPitchTimeline(newTempo));
       const result = await AudioPlaybackService.preRenderVoiceTracks(scoreData.notes, newTempo);
       if (myId !== prepareIdRef.current) return;
       if (!result) {
@@ -398,22 +414,34 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
       }
     }
 
-    const xValues = timingMap.map((e) => e.x);
-    const minX = Math.min(...xValues);
-    const maxX = Math.max(...xValues);
-    const rangeX = Math.max(1, maxX - minX);
+    // Group timing entries by system so x-ratio is computed per-system
+    const bySystem = new Map();
+    for (const entry of timingMap) {
+      const sysIdx = entry.systemIndex ?? 0;
+      if (!bySystem.has(sysIdx)) bySystem.set(sysIdx, []);
+      bySystem.get(sysIdx).push(entry);
+    }
+
+    // Compute per-system x ranges
+    const systemXRanges = {};
+    for (const [sysIdx, entries] of bySystem) {
+      const xs = entries.map(e => e.x);
+      const mn = Math.min(...xs);
+      const mx = Math.max(...xs);
+      systemXRanges[sysIdx] = { min: mn, max: mx, range: Math.max(1, mx - mn) };
+    }
 
     const positions = timingMap.map((entry) => {
-      const ratio = (entry.x - minX) / rangeX;
-      // Use systemIndex directly from the timing map (set by AudiverisService)
       const sysIdx = entry.systemIndex ?? 0;
-      return { time: entry.time, ratio: Math.max(0, Math.min(1, ratio)), systemIndex: sysIdx, y: entry.y };
+      const sysR = systemXRanges[sysIdx];
+      const ratio = (entry.x - sysR.min) / sysR.range;
+      return { time: entry.time, ratio: Math.max(0, Math.min(1, ratio)), systemIndex: sysIdx, y: entry.y, voicePositions: entry.voicePositions || [] };
     });
 
     setCursorInfo({
       positions, systemBounds,
       imageWidth: imgW, imageHeight: imgH,
-      xRange: { min: minX, max: maxX },
+      systemXRanges,
     });
   };
 
@@ -616,6 +644,9 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
           onSeek={handleSeek}
           measureBeats={scoreData.metadata?.measureBeats}
           tempo={tempo}
+          pitchTimeline={pitchTimeline}
+          voiceSelection={voiceSelection}
+          debugNotes={scoreData?.notes}
         />
       </View>
 
@@ -653,12 +684,9 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
           />
           <View style={styles.tempoPresets}>
             {[
-              { label: 'Largo',    bpm: 50 },
-              { label: 'Adagio',   bpm: 72 },
-              { label: 'Andante',  bpm: 92 },
-              { label: 'Moderato', bpm: 108 },
-              { label: 'Allegro',  bpm: 132 },
-              { label: 'Presto',   bpm: 180 },
+              { label: 'Slow',    bpm: 72 },
+              { label: 'Original', bpm: scoreData?.metadata?.tempo || 120 },
+              { label: 'Fast',    bpm: 160 },
             ].map((p) => (
               <TouchableOpacity
                 key={p.label}

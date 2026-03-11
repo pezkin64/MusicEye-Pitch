@@ -18,6 +18,7 @@ import {
 import * as ImagePicker from 'expo-image-picker';
 import { Feather } from '@expo/vector-icons';
 import { AudiverisService } from '../services/AudiverisService';
+import { OMRSettings } from '../services/OMRSettings';
 
 const palette = {
   background: '#F9F7F1',
@@ -35,6 +36,7 @@ export const SettingsScreen = ({ onNavigateBack }) => {
   const [audiverisUrl, setAudiverisUrl] = useState(AudiverisService.getServerUrl());
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
+  const [engine, setEngine] = useState(OMRSettings.getEngine());
 
   // Preprocessing preview state
   const [previewOriginal, setPreviewOriginal] = useState(null);
@@ -42,6 +44,15 @@ export const SettingsScreen = ({ onNavigateBack }) => {
   const [previewing, setPreviewing] = useState(false);
   const [previewError, setPreviewError] = useState(null);
   const [fullscreenImage, setFullscreenImage] = useState(null);
+
+  React.useEffect(() => {
+    OMRSettings.load().then(() => setEngine(OMRSettings.getEngine()));
+  }, []);
+
+  const selectEngine = async (eng) => {
+    await OMRSettings.setEngine(eng);
+    setEngine(eng);
+  };
 
   const handleSave = () => {
     const url = audiverisUrl.trim();
@@ -152,19 +163,42 @@ export const SettingsScreen = ({ onNavigateBack }) => {
             <Text style={styles.sectionTitle}>OMR Engine</Text>
           </View>
 
-          <View style={[styles.engineCard, styles.engineCardActive]}>
-            <View style={styles.engineHeader}>
-              <View style={[styles.radioOuter, styles.radioOuterActive]}>
-                <View style={styles.radioInner} />
+          <View style={styles.engineRow}>
+            <TouchableOpacity
+              style={[styles.engineCard, engine === 'ondevice' && styles.engineCardActive]}
+              onPress={() => selectEngine('ondevice')}
+            >
+              <View style={styles.engineHeader}>
+                <View style={[styles.radioOuter, engine === 'ondevice' && styles.radioOuterActive]}>
+                  {engine === 'ondevice' && <View style={styles.radioInner} />}
+                </View>
+                <Text style={[styles.engineName, engine === 'ondevice' && styles.engineNameActive]}>
+                  On-Device
+                </Text>
               </View>
-              <Text style={[styles.engineName, styles.engineNameActive]}>
-                Audiveris
+              <Text style={styles.engineDesc}>
+                Runs entirely on your phone. No server needed. Fast and private.
               </Text>
-            </View>
-            <Text style={styles.engineDesc}>
-              Full-featured OMR. Detects notes, dynamics, articulations, repeats, and lyrics.
-            </Text>
-            <Text style={styles.engineVersion}>v5.9.0 • Advanced preprocessing</Text>
+              <Text style={styles.engineVersion}>Rule-based • No internet required</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.engineCard, engine === 'audiveris' && styles.engineCardActive]}
+              onPress={() => selectEngine('audiveris')}
+            >
+              <View style={styles.engineHeader}>
+                <View style={[styles.radioOuter, engine === 'audiveris' && styles.radioOuterActive]}>
+                  {engine === 'audiveris' && <View style={styles.radioInner} />}
+                </View>
+                <Text style={[styles.engineName, engine === 'audiveris' && styles.engineNameActive]}>
+                  Audiveris
+                </Text>
+              </View>
+              <Text style={styles.engineDesc}>
+                Full-featured OMR. Detects notes, dynamics, articulations, repeats, and lyrics.
+              </Text>
+              <Text style={styles.engineVersion}>v5.9.0 • Requires server</Text>
+            </TouchableOpacity>
           </View>
         </View>
 

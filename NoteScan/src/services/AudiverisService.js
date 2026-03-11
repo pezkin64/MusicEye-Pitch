@@ -420,11 +420,14 @@ class AudiverisServiceClass {
               // Use absolute pixel coordinates directly (already scaled to display image)
               const clusterCenterX = cluster.reduce((s, h) => s + h.x + h.w / 2, 0) / cluster.length;
 
-              for (const note of beatNotes) {
+              // Match notes to heads by vertical position: heads sorted by y ascending
+              // (top of page = highest pitch) paired with notes by midiNote descending
+              const sortedHeads = [...cluster].sort((a, b) => a.y - b.y);
+              const sortedBeatNotes = [...beatNotes].sort((a, b) => (b.midiNote || 0) - (a.midiNote || 0));
+              for (let ni = 0; ni < sortedBeatNotes.length; ni++) {
+                const note = sortedBeatNotes[ni];
                 note.x = clusterCenterX;
-                // Set Y from closest matching .omr head in this cluster
-                const headForNote = cluster.length === 1 ? cluster[0]
-                  : cluster.reduce((best, h) => (!best || Math.abs(h.pitch - (note.omrPitch || 0)) < Math.abs(best.pitch - (note.omrPitch || 0))) ? h : best, null);
+                const headForNote = sortedHeads[Math.min(ni, sortedHeads.length - 1)];
                 if (headForNote) {
                   note.y = headForNote.y + headForNote.h / 2;
                   note._hasRealY = true;
@@ -432,9 +435,37 @@ class AudiverisServiceClass {
               }
             }
           } else {
-            // Fallback: distribute using measure x-range + beatOffset interpolation
-            matchedInterp += nonRests.length;
-            _assignXByBeatInterpolation(nonRests, range);
+            // Counts differ — use nearest-neighbor matching between beats and head clusters
+            // so we still get real .omr x positions for as many notes as possible
+            matchedDirect += nonRests.length;
+            const clusterXs = uniqueXClusters.map(cl =>
+              cl.reduce((s, h) => s + h.x + h.w / 2, 0) / cl.length
+            );
+
+            for (let bi = 0; bi < uniqueBeats.length; bi++) {
+              const beatNotes = nonRests.filter(n => n.beatOffset === uniqueBeats[bi]);
+              // Map this beat's fractional position to the nearest head cluster
+              const beatFrac = uniqueBeats.length > 1
+                ? bi / (uniqueBeats.length - 1)
+                : 0.5;
+              const targetIdx = Math.round(beatFrac * (uniqueXClusters.length - 1));
+              const clampedIdx = Math.max(0, Math.min(targetIdx, uniqueXClusters.length - 1));
+              const cluster = uniqueXClusters[clampedIdx];
+              const cx = clusterXs[clampedIdx];
+
+              // Match notes to heads by vertical position
+              const sortedHeads = [...cluster].sort((a, b) => a.y - b.y);
+              const sortedBeatNotes = [...beatNotes].sort((a, b) => (b.midiNote || 0) - (a.midiNote || 0));
+              for (let ni = 0; ni < sortedBeatNotes.length; ni++) {
+                const note = sortedBeatNotes[ni];
+                note.x = cx;
+                const headForNote = sortedHeads[Math.min(ni, sortedHeads.length - 1)];
+                if (headForNote) {
+                  note.y = headForNote.y + headForNote.h / 2;
+                  note._hasRealY = true;
+                }
+              }
+            }
           }
 
           // Assign rest positions using beatOffset interpolation within measure range
