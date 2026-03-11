@@ -242,7 +242,62 @@ User taps "Scan from Camera/Photos"
 
 ---
 
-## 10. Reference: Zemsky Reverse Engineering
+## 10. Gap Analysis: Our Engine vs Zemsky's Sheet Music Scanner (~50% parity)
+
+### What We Match Zemsky On
+| Pipeline Stage | Zemsky (C++) | Our Engine (JS) | Status |
+|---------------|-------------|-----------------|--------|
+| Sauvola adaptive binarization | `pixSauvolaBinarize` | `sauvolaBinarize()` in ImageUtils.js | ✅ Implemented (window size needs tuning) |
+| Staff detection | Column-sliced horizontal projection → 5-line groups | `detectStaffs()` in StaffDetector.js | ✅ Matches approach |
+| Staff removal | Scan-based erasure, preserves intersections | `removeStaffLines()` in StaffRemover.js | ✅ Matches approach |
+| Connected component analysis | `pixConnComp` → classify by shape | `connectedComponents()` + `detectSymbols()` | ✅ Matches approach |
+| Notehead classification | Filled/hollow/whole by fill ratio + correlation | `_classifyHeadType()` in SymbolDetector.js | ⚠️ Heuristic only, no template confirmation |
+| Stem/beam/dot detection | Shape-based size ratios | SymbolDetector.js classification | ✅ Matches approach |
+| Stem↔head, beam↔stem association | Geometric proximity rules | `associateStemsWithHeads()`, etc. | ✅ Matches approach |
+| Beam count → duration | 0=quarter, 1=eighth, 2=16th, 3=32nd | `assignDurations()` in DurationAssigner.js | ✅ Matches |
+| Staff position → MIDI pitch | Line/space mapping with clef offset | `staffPositionToPitch()` | ✅ Matches (but clef is hardcoded) |
+| Voice separation | Stem up = voice 1, stem down = voice 2 | `refineVoices()` | ✅ Matches |
+| MusicXML export | Multi-voice with `<backup>`, grand staff | `exportToMusicXML()` | ✅ Matches |
+
+### Critical Gaps vs Zemsky
+| Feature | Zemsky Does | We Do | Impact | Effort to Fix |
+|---------|------------|-------|--------|---------------|
+| **Clef detection** | Template-matches treble, bass, alto, tenor clefs | Hardcoded alternating treble/bass | **All pitches wrong if clef differs** | Medium — need template matching or CC shape analysis near staff start |
+| **Key signature detection** | Counts sharps/flats near clef, determines key | Hardcoded C major | **Wrong accidentals on every note** | Medium — detect small CCs between clef and first note |
+| **Time signature detection** | Template-matches stacked numbers (4/4, 3/4, 6/8) | Hardcoded 4/4 | **Measure grouping breaks on non-4/4 music** | Medium — template match or OCR two digits |
+| **Perspective correction** | Quad-corner dewarp for tilted photos | None | **Skewed phone photos fail** | Hard — need contour detection + homography transform |
+| **Image deskew** | Staff angle → affine rotation | None (StaffDetector computes angle but doesn't use it) | **Slightly rotated images misdetect** | Easy — rotate image by detected staff angle before processing |
+| **Ties & slurs** | Curve fitting on arcs between notes | Not implemented | **Tied notes play twice instead of sustaining** | Hard — arc detection + note linkage |
+| **Tuplets** | Bracket + "3" text detection | Not implemented | **Triplets play wrong rhythm** | Medium — detect brackets + adjust durations |
+| **Repeat signs** | Dot pairs + thick barlines + volta brackets | Not implemented | **Repeats ignored, plays once** | Medium — detect double barlines + dot pairs |
+| **Dynamics (p, f, mf)** | Text template matching | Not implemented | No expression in playback | Low priority |
+| **Articulations** | Staccato dots, accents, fermatas | Not implemented | Subtle playback differences | Low priority |
+
+### Known Bugs to Fix
+| Bug | Location | Fix |
+|-----|----------|-----|
+| Sauvola window ~75px, should be ~15px | `ImageUtils.js` — `sauvolaBinarize()` windowRatio | Change `windowRatio` from ~40 → 15 |
+| Double-dot only applies 1.5× instead of 1.75× | `DurationAssigner.js` line ~96-101 | Use `durationBeats *= 1.5 ** dotCount` |
+| Rest classification by size only, not shape | `SymbolDetector.js` — `_classifyRest()` | Add RLE contour analysis per Zemsky |
+| No template matching confirmation | `SymbolDetector.js` — noteheads | Add `correlationScore()` check (function exists in ImageUtils but unused) |
+
+### Priority Roadmap to Close Gap
+1. **Fix bugs** (Sauvola window, double-dot) — quick wins, 30 minutes
+2. **Add deskew** — use already-computed staff angle to rotate image — 1 session
+3. **Clef detection** — template match treble/bass/alto near staff start — 1-2 sessions
+4. **Key signature detection** — count sharp/flat CCs near clef — 1 session
+5. **Time signature detection** — template match or digit OCR — 1 session
+6. **Template matching refinement** — use existing `correlationScore()` to confirm noteheads — 1 session
+7. **Perspective correction** — contour-based quad detection — 2-3 sessions
+8. **Ties/slurs** — arc detection + note linkage — 2-3 sessions
+9. **Repeats** — double barline + dot pair detection — 1-2 sessions
+10. **Tuplets** — bracket detection + duration adjustment — 1-2 sessions
+
+**Estimated total to reach ~90% Zemsky parity: 12-15 more sessions.**
+
+---
+
+## 11. Reference: Zemsky Reverse Engineering
 
 `ASSETS/zemsky-reverse-engineering.md` contains a complete analysis of David Zemsky's `libsource-lib.so` (3.3MB arm64 binary from Sheet Music Scanner app). This was the blueprint for our on-device engine. Key sections:
 
@@ -258,7 +313,7 @@ Our implementation follows this pipeline closely but is written in JavaScript in
 
 ---
 
-## 11. File-by-File Quick Reference
+## 12. File-by-File Quick Reference
 
 | File | Lines (approx) | What It Does |
 |------|----------------|-------------|
