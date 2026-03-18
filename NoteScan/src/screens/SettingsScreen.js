@@ -18,6 +18,7 @@ import {
 import * as ImagePicker from 'expo-image-picker';
 import { Feather } from '@expo/vector-icons';
 import { AudiverisService } from '../services/AudiverisService';
+import { ZemskyEmulatorService } from '../services/ZemskyEmulatorService';
 import { OMRSettings } from '../services/OMRSettings';
 
 const palette = {
@@ -183,6 +184,24 @@ export const SettingsScreen = ({ onNavigateBack }) => {
             </TouchableOpacity>
 
             <TouchableOpacity
+              style={[styles.engineCard, engine === 'zemsky' && styles.engineCardActive]}
+              onPress={() => selectEngine('zemsky')}
+            >
+              <View style={styles.engineHeader}>
+                <View style={[styles.radioOuter, engine === 'zemsky' && styles.radioOuterActive]}>
+                  {engine === 'zemsky' && <View style={styles.radioInner} />}
+                </View>
+                <Text style={[styles.engineName, engine === 'zemsky' && styles.engineNameActive]}>
+                  Zemsky Emulator
+                </Text>
+              </View>
+              <Text style={styles.engineDesc}>
+                Uses the separate Android harness app to run the native Zemsky .so OMR stack.
+              </Text>
+              <Text style={styles.engineVersion}>arm64 emulator • Native .so runtime</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
               style={[styles.engineCard, engine === 'audiveris' && styles.engineCardActive]}
               onPress={() => selectEngine('audiveris')}
             >
@@ -200,6 +219,16 @@ export const SettingsScreen = ({ onNavigateBack }) => {
               <Text style={styles.engineVersion}>v5.9.0 • Requires server</Text>
             </TouchableOpacity>
           </View>
+        </View>
+
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Feather name="smartphone" size={18} color={palette.ink} />
+            <Text style={styles.sectionTitle}>Zemsky Emulator</Text>
+          </View>
+          <Text style={styles.sectionDescription}>
+            Default endpoint: {ZemskyEmulatorService.getServerUrl()}. Run the Zemsky Harness app in the same Android emulator, then select Zemsky Emulator here before scanning.
+          </Text>
         </View>
 
         {/* Server Configuration */}
@@ -281,9 +310,19 @@ export const SettingsScreen = ({ onNavigateBack }) => {
             </Text>
           </View>
 
+          <Text style={styles.sectionDescription}>
+            Run the Zemsky emulator harness:
+          </Text>
+          <View style={styles.codeBlock}>
+            <Text style={styles.codeText} selectable>
+              cd ZemskyHarness{'\n'}
+              ./gradlew installDebug{'\n'}
+              adb shell am start -n com.musiceye.zemskyharness/.MainActivity
+            </Text>
+          </View>
+
           <Text style={styles.hint}>
-            If running on a physical device, replace "localhost" with your
-            computer's IP address (e.g., 192.168.1.xxx).
+            Audiveris uses Docker on your host. Zemsky Emulator uses a separate Android app running inside the same emulator as NoteScan.
           </Text>
         </View>
 

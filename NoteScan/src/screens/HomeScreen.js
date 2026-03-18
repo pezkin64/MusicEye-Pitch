@@ -19,17 +19,26 @@ const logoXml = `
 `;
 
 export const HomeScreen = ({ onNavigate, onPickFromGallery, onPickFromCamera }) => {
-  const [serverStatus, setServerStatus] = useState(null); // null = checking, true = ok, false = down
+  const [serverStatus, setServerStatus] = useState(null);
   const [engine, setEngine] = useState(OMRSettings.getEngine());
 
   useEffect(() => {
     OMRSettings.load().then(() => {
-      setEngine(OMRSettings.getEngine());
-      checkServer();
+      const loadedEngine = OMRSettings.getEngine();
+      setEngine(loadedEngine);
+      if (loadedEngine !== 'ondevice') {
+        checkServer();
+      } else {
+        setServerStatus(true);
+      }
     });
   }, []);
 
   const checkServer = async () => {
+    if (OMRSettings.getEngine() === 'ondevice') {
+      setServerStatus(true);
+      return;
+    }
     setServerStatus(null);
     const service = OMRSettings.getService();
     const result = await service.checkHealth();
@@ -37,11 +46,25 @@ export const HomeScreen = ({ onNavigate, onPickFromGallery, onPickFromCamera }) 
   };
 
   const toggleEngine = async () => {
-    const next = engine === 'ondevice' ? 'audiveris' : 'ondevice';
+    const next = engine === 'ondevice'
+      ? 'zemsky'
+      : engine === 'zemsky'
+        ? 'audiveris'
+        : 'ondevice';
     await OMRSettings.setEngine(next);
     setEngine(next);
-    checkServer();
+    if (next !== 'ondevice') {
+      checkServer();
+    } else {
+      setServerStatus(true);
+    }
   };
+
+  const statusLabel = engine === 'ondevice'
+    ? 'On-device engine'
+    : engine === 'zemsky'
+      ? (serverStatus === null ? 'Checking Zemsky emulator...' : serverStatus ? 'Zemsky emulator connected' : 'Zemsky emulator unreachable')
+      : (serverStatus === null ? 'Checking Audiveris server...' : serverStatus ? 'Audiveris server connected' : 'Audiveris server unreachable');
 
   return (
     <View style={styles.container}>
@@ -62,11 +85,7 @@ export const HomeScreen = ({ onNavigate, onPickFromGallery, onPickFromCamera }) 
             serverStatus === null ? styles.statusChecking :
             serverStatus ? styles.statusOk : styles.statusDown,
           ]} />
-          <Text style={styles.statusText}>
-            {engine === 'ondevice' ? 'On-device engine' :
-             serverStatus === null ? 'Checking server...' :
-             serverStatus ? 'Audiveris server connected' : 'Audiveris server unreachable'}
-          </Text>
+          <Text style={styles.statusText}>{statusLabel}</Text>
           <Feather name="repeat" size={12} color="#6E675E" style={{ marginLeft: 4 }} />
         </TouchableOpacity>
       </View>

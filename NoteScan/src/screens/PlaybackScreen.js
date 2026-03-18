@@ -86,7 +86,11 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
     setProcessing(true);
     setScoreError(null);
     const engine = OMRSettings.getEngine();
-    const engineName = 'Audiveris';
+    const engineName = engine === 'ondevice'
+      ? 'On-device'
+      : engine === 'zemsky'
+        ? 'Zemsky Emulator'
+        : 'Audiveris';
     const service = OMRSettings.getService();
     const timeout = engine === 'audiveris' ? 180000 : 120000;
 
@@ -106,7 +110,7 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
     }
 
     // ── No cache — run OMR engine ──
-    setProcessingStage(`Connecting to ${engineName} server...`);
+    setProcessingStage(`Connecting to ${engineName}...`);
     try {
       const result = await Promise.race([
         service.processSheet(imageUri, (stage) => setProcessingStage(stage)),
@@ -117,7 +121,6 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
         setScoreError(`${engineName} could not detect any notes in this image. Try a clearer or higher-resolution photo.`);
       } else {
         setScoreData(result);
-        // Store in cache for next time (async, don't block)
         OMRCacheService.set(imageUri, engine, result).catch(() => {});
       }
     } catch (e) {

@@ -1,0 +1,5 @@
+com/musiceye/zemsky/ZemskyServer.class
+com/xemsoft/sheetmusicscanner2/leptonica/JniLeptonicaJNI.class
+com/xemsoft/sheetmusicscanner2/sources/JniSourceJNI.class
+com/xemsoft/sheetmusicscanner2/analysis/Scanner.class
+com/musiceye/zemsky/OmrEngine.class

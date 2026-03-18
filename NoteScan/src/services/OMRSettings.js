@@ -1,19 +1,20 @@
 /**
  * OMRSettings — Shared settings for OMR engine.
- * Supports two engines:
+ * Supports three engines:
  *   - 'audiveris' — server-based (Audiveris via Docker)
  *   - 'ondevice'  — on-device rule-based engine (no server needed)
+ *   - 'zemsky'    — Android emulator harness backed by native .so files
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const STORAGE_KEY = '@omr_engine';
 
 class OMRSettingsClass {
-  _engine = 'ondevice'; // default to on-device (no server dependency)
+  _engine = 'ondevice';
 
   /**
    * Get the current engine name.
-   * @returns {'audiveris'|'ondevice'}
+   * @returns {'audiveris'|'ondevice'|'zemsky'}
    */
   getEngine() {
     return this._engine;
@@ -23,7 +24,7 @@ class OMRSettingsClass {
   async load() {
     try {
       const saved = await AsyncStorage.getItem(STORAGE_KEY);
-      if (saved === 'audiveris' || saved === 'ondevice') {
+      if (saved === 'audiveris' || saved === 'ondevice' || saved === 'zemsky') {
         this._engine = saved;
       }
     } catch (e) {
@@ -33,7 +34,7 @@ class OMRSettingsClass {
 
   /** Switch engine. */
   async setEngine(engine) {
-    if (engine === 'audiveris' || engine === 'ondevice') {
+    if (engine === 'audiveris' || engine === 'ondevice' || engine === 'zemsky') {
       this._engine = engine;
       try {
         await AsyncStorage.setItem(STORAGE_KEY, engine);
@@ -50,6 +51,10 @@ class OMRSettingsClass {
     if (this._engine === 'ondevice') {
       const { OnDeviceOMRService } = require('./OnDeviceOMRService');
       return OnDeviceOMRService;
+    }
+    if (this._engine === 'zemsky') {
+      const { ZemskyEmulatorService } = require('./ZemskyEmulatorService');
+      return ZemskyEmulatorService;
     }
     const { AudiverisService } = require('./AudiverisService');
     return AudiverisService;

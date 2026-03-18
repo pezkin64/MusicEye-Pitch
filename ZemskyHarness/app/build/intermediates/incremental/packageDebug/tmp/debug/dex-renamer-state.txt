@@ -1,0 +1,16 @@
+#Wed Mar 18 20:30:57 UTC 2026
+base.0=/workspaces/music-eye-from-quantum/ZemskyHarness/app/build/intermediates/dex/debug/mergeExtDexDebug/classes.dex
+base.1=/workspaces/music-eye-from-quantum/ZemskyHarness/app/build/intermediates/dex/debug/mergeProjectDexDebug/0/classes.dex
+base.2=/workspaces/music-eye-from-quantum/ZemskyHarness/app/build/intermediates/dex/debug/mergeProjectDexDebug/11/classes.dex
+base.3=/workspaces/music-eye-from-quantum/ZemskyHarness/app/build/intermediates/dex/debug/mergeProjectDexDebug/13/classes.dex
+base.4=/workspaces/music-eye-from-quantum/ZemskyHarness/app/build/intermediates/dex/debug/mergeProjectDexDebug/7/classes.dex
+path.0=classes.dex
+path.1=0/classes.dex
+path.2=11/classes.dex
+path.3=13/classes.dex
+path.4=7/classes.dex
+renamed.0=classes.dex
+renamed.1=classes2.dex
+renamed.2=classes3.dex
+renamed.3=classes4.dex
+renamed.4=classes5.dex
