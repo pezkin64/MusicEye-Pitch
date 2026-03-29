@@ -20,47 +20,22 @@ const logoXml = `
 
 export const HomeScreen = ({ onNavigate, onPickFromGallery, onPickFromCamera }) => {
   const [serverStatus, setServerStatus] = useState(null);
-  const [engine, setEngine] = useState(OMRSettings.getEngine());
 
   useEffect(() => {
     OMRSettings.load().then(() => {
-      const loadedEngine = OMRSettings.getEngine();
-      setEngine(loadedEngine);
-      if (loadedEngine !== 'ondevice') {
-        checkServer();
-      } else {
-        setServerStatus(true);
-      }
+      checkServer();
     });
   }, []);
 
   const checkServer = async () => {
-    if (OMRSettings.getEngine() === 'ondevice') {
-      setServerStatus(true);
-      return;
-    }
     setServerStatus(null);
     const service = OMRSettings.getService();
     const result = await service.checkHealth();
     setServerStatus(result.ok);
   };
 
-  const toggleEngine = async () => {
-    const next = engine === 'ondevice'
-      ? 'zemsky'
-      : 'ondevice';
-    await OMRSettings.setEngine(next);
-    setEngine(next);
-    if (next !== 'ondevice') {
-      checkServer();
-    } else {
-      setServerStatus(true);
-    }
-  };
-
-  const statusLabel = engine === 'ondevice'
-    ? 'On-device engine'
-    : (serverStatus === null ? 'Checking Zemsky emulator...' : serverStatus ? 'Zemsky emulator connected' : 'Zemsky emulator unreachable');
+  const statusLabel =
+    serverStatus === null ? 'Checking Zemsky emulator...' : serverStatus ? 'Zemsky emulator connected' : 'Zemsky emulator unreachable';
 
   return (
     <View style={styles.container}>
@@ -74,10 +49,9 @@ export const HomeScreen = ({ onNavigate, onPickFromGallery, onPickFromCamera }) 
         <Text style={styles.subtitle}>Scan and play sheet music in seconds</Text>
 
         {/* Engine / status indicator */}
-        <TouchableOpacity style={styles.statusRow} onPress={toggleEngine}>
+        <TouchableOpacity style={styles.statusRow} onPress={checkServer}>
           <View style={[
             styles.statusDot,
-            engine === 'ondevice' ? styles.statusOk :
             serverStatus === null ? styles.statusChecking :
             serverStatus ? styles.statusOk : styles.statusDown,
           ]} />

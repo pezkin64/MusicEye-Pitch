@@ -1,7 +1,6 @@
 /**
  * OMRSettings — Shared settings for OMR engine.
- * Supports two engines:
- *   - 'ondevice'  — on-device rule-based engine (no server needed)
+ * Supports one engine:
  *   - 'zemsky'    — Android emulator harness backed by native .so files
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -9,11 +8,11 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 const STORAGE_KEY = '@omr_engine';
 
 class OMRSettingsClass {
-  _engine = 'ondevice';
+  _engine = 'zemsky';
 
   /**
    * Get the current engine name.
-   * @returns {'ondevice'|'zemsky'}
+   * @returns {'zemsky'}
    */
   getEngine() {
     return this._engine;
@@ -23,7 +22,7 @@ class OMRSettingsClass {
   async load() {
     try {
       const saved = await AsyncStorage.getItem(STORAGE_KEY);
-      if (saved === 'ondevice' || saved === 'zemsky') {
+      if (saved === 'zemsky') {
         this._engine = saved;
       }
     } catch (e) {
@@ -33,7 +32,7 @@ class OMRSettingsClass {
 
   /** Switch engine. */
   async setEngine(engine) {
-    if (engine === 'ondevice' || engine === 'zemsky') {
+    if (engine === 'zemsky') {
       this._engine = engine;
       try {
         await AsyncStorage.setItem(STORAGE_KEY, engine);
@@ -47,13 +46,8 @@ class OMRSettingsClass {
    * Get the active service instance.
    */
   getService() {
-    if (this._engine === 'zemsky') {
-      const { ZemskyEmulatorService } = require('./ZemskyEmulatorService');
-      return ZemskyEmulatorService;
-    }
-    // Default to on-device
-    const { OnDeviceOMRService } = require('./OnDeviceOMRService');
-    return OnDeviceOMRService;
+    const { ZemskyEmulatorService } = require('./ZemskyEmulatorService');
+    return ZemskyEmulatorService;
   }
 }
 

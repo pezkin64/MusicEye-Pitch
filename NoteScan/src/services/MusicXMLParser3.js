@@ -70,15 +70,9 @@ export class MusicXMLParser {
   /**
    * Parse a MusicXML string into notes and metadata.
    * @param {string} xml - raw MusicXML string
-   * @param {{ strictMusicXml?: boolean, collapseTies?: boolean }} [options]
    * @returns {{ notes: Array, metadata: Object }}
    */
-  static parse(xml, options = {}) {
-    const strictMusicXml = !!options.strictMusicXml;
-    const collapseTies = options.collapseTies !== undefined
-      ? !!options.collapseTies
-      : !strictMusicXml;
-
+  static parse(xml) {
     const notes = [];
     const metadata = {
       title: '',
@@ -185,12 +179,9 @@ export class MusicXMLParser {
         // track each voice independently to avoid treating concurrent
         // notes as sequential.
         const measureStartBeat = globalBeatOffset;
-        let measureHasRest = false;
 
         // voiceBeatPos: Map<"staff_voice" → current beat position in measure>
         const voiceBeatPos = new Map();
-        // lastOnsetByVoice: Map<"staff_voice" → last non-chord note onset in measure>
-        const lastOnsetByVoice = new Map();
         // "active" voice key — tracks which voice the linear position belongs to
         let activeVoiceKey = null;
         // Fallback linear position (used for backup/forward which are voice-independent)
@@ -268,16 +259,8 @@ export class MusicXMLParser {
           // Compute beat offset for this note
           let noteBeatOffset;
           if (isChord) {
-            // Chord: same onset as the previous note in this voice.
-            // Do not derive onset by subtracting the CURRENT chord note duration,
-            // because OMR can emit inconsistent duration/type for chord members.
-            const lastOnset = lastOnsetByVoice.get(vKey);
-            if (Number.isFinite(lastOnset)) {
-              noteBeatOffset = measureStartBeat + lastOnset;
-            } else {
-              // Fallback for malformed input where a chord appears before a base note.
-              noteBeatOffset = measureStartBeat + Math.max(0, voicePos - durationBeats);
-            }
+            // Chord: same onset as previous note in this voice
+            noteBeatOffset = measureStartBeat + Math.max(0, voicePos - durationBeats);
           } else {
             noteBeatOffset = measureStartBeat + voicePos;
           }
@@ -287,7 +270,6 @@ export class MusicXMLParser {
           const tieStop = /<tie\s+type="stop"\s*\/>/.test(noteXml);
 
           if (isRest) {
-            measureHasRest = true;
             notes.push({
               type: 'rest',
               pitch: null,
@@ -344,7 +326,6 @@ export class MusicXMLParser {
 
           // Advance this voice's beat position (only for non-chord notes)
           if (!isChord) {
-            lastOnsetByVoice.set(vKey, voicePos);
             voiceBeatPos.set(vKey, voicePos + durationBeats);
             // Also update linear position to track the furthest point
             linearBeatPos = Math.max(linearBeatPos, voiceBeatPos.get(vKey));
@@ -363,20 +344,6 @@ export class MusicXMLParser {
         if (measureIndex === 0 && maxVoicePos > 0 && maxVoicePos < theoreticalBeats) {
           // Pickup measure — use actual content duration
           measureBeats = maxVoicePos;
-        } else if (
-          !measureHasRest &&
-          maxVoicePos > 0 &&
-          theoreticalBeats > (maxVoicePos * 1.5) &&
-          (theoreticalBeats - maxVoicePos) >= 1
-        ) {
-          // OMR can emit over-large time signatures (e.g. 8 BPM with oversized bars)
-          // while note durations are much shorter. If there are no explicit rests,
-          // treat this as timing over-padding and use actual content span.
-          measureBeats = maxVoicePos;
-          console.warn(
-            `⏱️ Trimmed padded measure ${measureIndex + 1}: ` +
-            `theoretical=${theoreticalBeats.toFixed(2)} beats, content=${maxVoicePos.toFixed(2)} beats`
-          );
         } else {
           // Normal measure — use theoretical, or actual if content overflows
           measureBeats = Math.max(theoreticalBeats, maxVoicePos);
@@ -397,10 +364,8 @@ export class MusicXMLParser {
       metadata.keySignature = this._fifthsToKey(currentKey.fifths);
     }
 
-    // Resolve ties unless strict literal parsing is requested.
-    if (collapseTies) {
-      this._resolveTies(notes);
-    }
+    // Resolve ties
+    this._resolveTies(notes);
 
     metadata.systems = Math.max(1, systemIndex + 1);
     metadata.staves = globalStaffOffset;
@@ -419,30 +384,15 @@ export class MusicXMLParser {
       if (n.type === 'note') voiceCounts[n.voice] = (voiceCounts[n.voice] || 0) + 1;
     }
 
-    // Check whether SATB assignment should be rebalanced.
-    // Typical trigger: 2+ SATB voices are empty (all notes collapsed to one/two voices).
-    // Additional trigger: severe imbalance, e.g. S=113, A=17, T=1, B=0.
-    // In both cases, redistribute with a hybrid per-beat + quartile approach:
+    // Check how many of the 4 SATB voices actually have notes.
+    // Audiveris often puts everything in voice 1 → only Soprano (single staff)
+    // or Soprano + Tenor (grand staff). When ≥2 voices are empty, redistribute
+    // using a hybrid per-beat + quartile approach:
     //   • Beats with 2+ simultaneous notes: top→S, next→A, next→T, bottom→B
-    //   • Beats with only 1 note: index-based quartile fallback
+    //   • Beats with only 1 note: use global quartile fallback
     const allFourVoices = ['Soprano', 'Alto', 'Tenor', 'Bass'];
     const emptyVoices = allFourVoices.filter(v => !voiceCounts[v]);
-    const nonZeroCounts = Object.values(voiceCounts).filter(c => c > 0);
-    const maxVoiceCount = nonZeroCounts.length > 0 ? Math.max(...nonZeroCounts) : 0;
-    const minVoiceCount = nonZeroCounts.length > 0 ? Math.min(...nonZeroCounts) : 0;
-    const dominantVoiceShare = noteCount > 0 ? (maxVoiceCount / noteCount) : 0;
-    const severeImbalance = nonZeroCounts.length >= 2 && (
-      dominantVoiceShare >= 0.70 ||
-      maxVoiceCount >= (minVoiceCount * 3)
-    );
-
-    if ((emptyVoices.length >= 2 || severeImbalance) && noteCount > 1) {
-      if (severeImbalance && emptyVoices.length < 2) {
-        console.log(
-          `🎤 SATB imbalance detected: max=${maxVoiceCount}, min=${minVoiceCount}, ` +
-          `dominant=${(dominantVoiceShare * 100).toFixed(1)}%`
-        );
-      }
+    if (emptyVoices.length >= 2 && noteCount > 1) {
       const pitched = notes.filter(n => n.type === 'note' && n.midiNote != null);
       const total = pitched.length;
 
@@ -456,20 +406,15 @@ export class MusicXMLParser {
         }
 
         // ── Step 2: Per-beat assignment for chords (2+ notes at same beat) ──
-        const upperVoiceOrder = ['Soprano', 'Alto', 'Tenor', 'Bass'];
-        const lowerVoiceOrder = ['Tenor', 'Alto', 'Bass', 'Soprano'];
-        const staffMidpoint = Math.max(0, (metadata.staves - 1) / 2);
+        const voiceOrder = ['Soprano', 'Alto', 'Tenor', 'Bass'];
         const singleNotes = []; // notes alone on their beat — handled in step 3
 
         for (const [, group] of beatGroups) {
           if (group.length >= 2) {
-            // Sort highest pitch first and assign by staff region.
-            // Upper staff prefers S/A; lower staff prefers T/B.
+            // Sort highest pitch first → assign S, A, T, B top-to-bottom
             group.sort((a, b) => b.midiNote - a.midiNote);
-            const avgStaff = group.reduce((sum, n) => sum + (Number.isFinite(n.staffIndex) ? n.staffIndex : staffMidpoint), 0) / group.length;
-            const preferredOrder = avgStaff > staffMidpoint ? lowerVoiceOrder : upperVoiceOrder;
             group.forEach((n, i) => {
-              n.voice = preferredOrder[Math.min(i, 3)];
+              n.voice = voiceOrder[Math.min(i, 3)];
             });
           } else {
             singleNotes.push(group[0]);
@@ -478,47 +423,17 @@ export class MusicXMLParser {
 
         // ── Step 3: Quartile fallback for single-note beats ──
         if (singleNotes.length > 0) {
-          // Staff-aware single-note assignment:
-          // upper-staff singles split between Alto/Soprano,
-          // lower-staff singles split between Bass/Tenor.
-          const upperSingles = [];
-          const lowerSingles = [];
+          // Use all pitched notes to compute quartile boundaries (not just singles)
+          const sortedAll = [...pitched].sort((a, b) => a.midiNote - b.midiNote);
+          const q1 = sortedAll[Math.floor(sortedAll.length * 0.25)].midiNote;
+          const q2 = sortedAll[Math.floor(sortedAll.length * 0.50)].midiNote;
+          const q3 = sortedAll[Math.floor(sortedAll.length * 0.75)].midiNote;
 
           for (const n of singleNotes) {
-            const sIdx = Number.isFinite(n.staffIndex) ? n.staffIndex : staffMidpoint;
-            if (sIdx > staffMidpoint) lowerSingles.push(n);
-            else upperSingles.push(n);
-          }
-
-          const assignBiased = (arr, lowVoice, highVoice, lowShare) => {
-            if (arr.length === 0) return;
-            arr.sort((a, b) => a.midiNote - b.midiNote);
-            const split = Math.floor(arr.length * lowShare);
-            for (let i = 0; i < arr.length; i++) {
-              arr[i].voice = i < split ? lowVoice : highVoice;
-            }
-          };
-
-          // Bias toward inner/upper voices for single notes.
-          // Lower singles: keep fewer in Bass to avoid Bass domination.
-          // Upper singles: keep fewer in Alto to lift Soprano count.
-          assignBiased(lowerSingles, 'Bass', 'Tenor', 0.20);
-          assignBiased(upperSingles, 'Alto', 'Soprano', 0.35);
-
-          // Final safety fallback for any uncategorized single note.
-          const unassigned = singleNotes.filter(n => !n.voice);
-          if (unassigned.length > 0) {
-            const sortedSingles = [...unassigned].sort((a, b) => a.midiNote - b.midiNote);
-            const n = sortedSingles.length;
-            const q1_idx = Math.floor(n * 0.25);
-            const q2_idx = Math.floor(n * 0.50);
-            const q3_idx = Math.floor(n * 0.75);
-            for (let i = 0; i < n; i++) {
-              if (i < q1_idx) sortedSingles[i].voice = 'Bass';
-              else if (i < q2_idx) sortedSingles[i].voice = 'Tenor';
-              else if (i < q3_idx) sortedSingles[i].voice = 'Alto';
-              else sortedSingles[i].voice = 'Soprano';
-            }
+            if (n.midiNote < q1)       n.voice = 'Bass';
+            else if (n.midiNote < q2)  n.voice = 'Tenor';
+            else if (n.midiNote < q3)  n.voice = 'Alto';
+            else                       n.voice = 'Soprano';
           }
         }
 
@@ -597,27 +512,12 @@ export class MusicXMLParser {
       }
     }
 
-    // Extract tempo from <sound tempo="..."/>.
-    // Prefer the last declared tempo and reject unrealistic OMR calibration values.
-    const tempoMatches = [...xml.matchAll(/<sound[^>]*\btempo="([\d.]+)"/g)];
-    let selectedTempo = tempoMatches.length > 0
-      ? parseFloat(tempoMatches[tempoMatches.length - 1][1])
-      : null;
-
-    if (!Number.isFinite(selectedTempo) || selectedTempo < 40 || selectedTempo > 240) {
-      // Fallback: 120 BPM for malformed/unrealistic tempos (e.g., 8 BPM).
-      selectedTempo = 120;
-    }
-
-    metadata.tempo = Math.round(selectedTempo);
-
     console.log(
       `✅ Parsed MusicXML: ${noteCount} notes, ${restCount} rests, ` +
       `${metadata.staves} staves, ${metadata.systems} systems, ` +
       `${metadata.totalMeasures} measures, ${globalBeatOffset} total beats\n` +
       `   Voice distribution: ${Object.entries(voiceCounts).map(([v,c]) => `${v}=${c}`).join(', ')}` +
-      (metadata.noteRange ? `\n   Range: ${metadata.noteRange.low.pitch} – ${metadata.noteRange.high.pitch}` : '') +
-      (metadata.tempo ? `\n   Tempo: ${metadata.tempo} BPM` : '')
+      (metadata.noteRange ? `\n   Range: ${metadata.noteRange.low.pitch} – ${metadata.noteRange.high.pitch}` : '')
     );
 
     return { notes, metadata };
@@ -659,32 +559,20 @@ export class MusicXMLParser {
    */
   static _resolveTies(notes) {
     const openTies = new Map();
-    const TIE_CONTIGUITY_EPSILON = 0.02;
 
     for (let i = 0; i < notes.length; i++) {
       const note = notes[i];
       if (note.type !== 'note') continue;
 
-      const key = `${note.partIndex}_${note.staffIndex}_${note.voice}_${note.midiNote}`;
+      const key = `${note.staffIndex}_${note.voice}_${note.midiNote}`;
 
       if (note._tieStop && openTies.has(key)) {
         const startIdx = openTies.get(key);
         const starter = notes[startIdx];
         const startBeats = starter.tiedBeats || starter.durationBeats || DURATION_BEATS[starter.duration] || 1;
         const addBeats = note.durationBeats || DURATION_BEATS[note.duration] || 1;
-
-        // Only merge ties when the continuation is contiguous in time.
-        // This prevents accidental note drops from malformed tie tags.
-        const expectedStart = (starter.beatOffset || 0) + startBeats;
-        const actualStart = note.beatOffset || 0;
-        const isContiguous = Math.abs(actualStart - expectedStart) <= TIE_CONTIGUITY_EPSILON;
-
-        if (isContiguous) {
-          starter.tiedBeats = startBeats + addBeats;
-          note._remove = true;
-        } else {
-          openTies.delete(key);
-        }
+        starter.tiedBeats = startBeats + addBeats;
+        note._remove = true;
 
         if (note._tieStart) {
           openTies.set(key, startIdx);

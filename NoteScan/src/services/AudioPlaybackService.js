@@ -265,15 +265,16 @@ export class AudioPlaybackService {
     const hasBeatOffset = notes.some(n => typeof n.beatOffset === 'number' && Number.isFinite(n.beatOffset));
     if (!hasBeatOffset) return null;
 
-    // Calculate total beats first so we can synthesize x positions
-    const realNotes = notes.filter(n => n.type !== 'note' || n.midiNote != null);
+    // Keep only real note events for audio scheduling.
+    // Rests are tracked separately for cursor timing but must not become synth events.
+    const realNotes = notes.filter(
+      n => n.type === 'note' && Number.isFinite(n.midiNote) && Number.isFinite(n.beatOffset)
+    );
     let totalBeats = 0;
     for (const n of realNotes) {
-      if (n.type === 'note' && typeof n.beatOffset === 'number') {
-        const dur = getBeats(n);
-        const endBeat = n.beatOffset + dur;
-        totalBeats = Math.max(totalBeats, endBeat);
-      }
+      const dur = getBeats(n);
+      const endBeat = n.beatOffset + dur;
+      totalBeats = Math.max(totalBeats, endBeat);
     }
     if (totalBeats === 0) totalBeats = 1; // avoid division by zero
     
@@ -312,6 +313,33 @@ export class AudioPlaybackService {
       beatMap.get(e.beatOffset).push(e);
     }
     const beatPositions = [...beatMap.keys()].sort((a, b) => a - b);
+
+    // Diagnostic: detect true timing holes between note groups.
+    // A hole exists when the next onset starts after all notes at current onset have ended.
+    const timingHoles = [];
+    for (let i = 0; i < beatPositions.length - 1; i++) {
+      const bo = beatPositions[i];
+      const nextBo = beatPositions[i + 1];
+      const group = beatMap.get(bo) || [];
+      const maxDur = group.reduce((mx, n) => Math.max(mx, n.durationBeats || 0), 0);
+      const holeBeats = nextBo - (bo + maxDur);
+      if (holeBeats > 0.001) {
+        timingHoles.push({ startBeat: bo + maxDur, endBeat: nextBo, holeBeats });
+      }
+    }
+    if (timingHoles.length > 0) {
+      const sortedHoles = [...timingHoles].sort((a, b) => b.holeBeats - a.holeBeats);
+      const maxHole = sortedHoles[0].holeBeats;
+      const totalHoleBeats = timingHoles.reduce((s, h) => s + h.holeBeats, 0);
+      console.warn(
+        `⏱️ Timing holes: ${timingHoles.length} gaps, total=${totalHoleBeats.toFixed(2)} beats, ` +
+        `max=${maxHole.toFixed(2)} beats; top=` +
+        sortedHoles
+          .slice(0, 5)
+          .map(h => `${h.startBeat.toFixed(2)}-${h.endBeat.toFixed(2)}(${h.holeBeats.toFixed(2)})`)
+          .join(', ')
+      );
+    }
 
     const timingBeatData = [];
     for (const bo of beatPositions) {
@@ -356,7 +384,7 @@ export class AudioPlaybackService {
     // Pre-generate all waveforms so play/tempo-change is instant
     this._precacheWaveforms();
 
-    console.log(`🎵 Prepared ${noteEvents.length} note events, ${totalBeats.toFixed(1)} total beats, synthesized x from beatOffset`);
+    console.log(`🎵 Prepared ${noteEvents.length} note events (+${rests.length} rests), ${totalBeats.toFixed(1)} total beats, synthesized x from beatOffset`);
     return { noteEvents, timingBeatData, totalBeats };
   }
 

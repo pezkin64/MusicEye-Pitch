@@ -93,24 +93,6 @@ export const SettingsScreen = ({ onNavigateBack }) => {
 
           <View style={styles.engineRow}>
             <TouchableOpacity
-              style={[styles.engineCard, engine === 'ondevice' && styles.engineCardActive]}
-              onPress={() => selectEngine('ondevice')}
-            >
-              <View style={styles.engineHeader}>
-                <View style={[styles.radioOuter, engine === 'ondevice' && styles.radioOuterActive]}>
-                  {engine === 'ondevice' && <View style={styles.radioInner} />}
-                </View>
-                <Text style={[styles.engineName, engine === 'ondevice' && styles.engineNameActive]}>
-                  On-Device
-                </Text>
-              </View>
-              <Text style={styles.engineDesc}>
-                Runs entirely on your phone. No server needed. Fast and private.
-              </Text>
-              <Text style={styles.engineVersion}>Rule-based • No internet required</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
               style={[styles.engineCard, engine === 'zemsky' && styles.engineCardActive]}
               onPress={() => selectEngine('zemsky')}
             >
@@ -174,7 +156,7 @@ export const SettingsScreen = ({ onNavigateBack }) => {
           </View>
 
           <Text style={styles.hint}>
-            Zemsky Emulator uses a separate Android app running in the same emulator as NoteScan. On-Device engine runs entirely on your phone with no external dependencies.
+            Zemsky Emulator uses a separate Android app running in the same emulator as NoteScan.
           </Text>
         </View>
 

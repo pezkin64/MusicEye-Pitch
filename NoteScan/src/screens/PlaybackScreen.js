@@ -231,13 +231,11 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
 
     const ENGINE_LABELS = {
       audiveris: 'Audiveris',
-      ondevice: 'On-device',
       zemsky: 'Zemsky Emulator',
     };
 
     const ENGINE_TIMEOUTS = {
       audiveris: 360000,
-      ondevice: 300000,
       zemsky: 180000,
     };
 
@@ -256,16 +254,11 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
       let service;
       if (engineKey === selectedEngine) {
         service = OMRSettings.getService();
-      } else if (engineKey === 'ondevice') {
-        const { OnDeviceOMRService } = require('../services/OnDeviceOMRService');
-        service = OnDeviceOMRService;
       } else if (engineKey === 'zemsky') {
         const { ZemskyEmulatorService } = require('../services/ZemskyEmulatorService');
         service = ZemskyEmulatorService;
       } else {
-        // Default to on-device
-        const { OnDeviceOMRService } = require('../services/OnDeviceOMRService');
-        service = OnDeviceOMRService;
+        service = OMRSettings.getService();
       }
 
       const result = await Promise.race([
@@ -275,7 +268,10 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
         )), timeout)),
       ]);
 
-      console.log(`🎼 ${engineName} result: ${result.notes?.length || 0} notes, source=${result.metadata?.source}`);
+      const totalEvents = result.notes?.length || 0;
+      const noteCount = result.notes?.filter((n) => n.type === 'note').length || 0;
+      const restCount = result.notes?.filter((n) => n.type === 'rest').length || 0;
+      console.log(`🎼 ${engineName} result: ${noteCount} notes, ${restCount} rests (${totalEvents} events), source=${result.metadata?.source}`);
       return { result, engineKey, engineName };
     };
 
@@ -285,7 +281,9 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
       const cached = await OMRCacheService.get(imageUri, selectedEngine);
       if (cached && cached.notes && cached.notes.length > 0) {
         const cachedEngineName = ENGINE_LABELS[selectedEngine] || selectedEngine;
-        console.log(`🗂️ Cache hit — ${cached.notes.length} notes, skipping ${cachedEngineName}`);
+        const cachedNotes = cached.notes.filter((n) => n.type === 'note').length;
+        const cachedRests = cached.notes.filter((n) => n.type === 'rest').length;
+        console.log(`🗂️ Cache hit — ${cachedNotes} notes, ${cachedRests} rests (${cached.notes.length} events), skipping ${cachedEngineName}`);
         setScoreData(cached);
         setProcessing(false);
         setProcessingStage('');
@@ -313,32 +311,7 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
       OMRCacheService.set(imageUri, run.engineKey, run.result).catch(() => {});
     } catch (e) {
       console.warn(`Primary engine (${selectedEngine}) failed:`, e?.message || e);
-
-      const shouldTryFallback = selectedEngine !== 'ondevice';
-      if (shouldTryFallback) {
-        try {
-          const fallback = await runEngine('ondevice', true);
-          if (!fallback.result?.notes || fallback.result.notes.length === 0) {
-            throw new Error('On-device could not detect any notes');
-          }
-
-          const detectedTempo = Number(fallback.result?.metadata?.tempo);
-          if (Number.isFinite(detectedTempo) && detectedTempo >= 40 && detectedTempo <= 240) {
-            setSliderTempo(Math.round(detectedTempo));
-            setTempo(Math.round(detectedTempo));
-          }
-
-          setScoreData(fallback.result);
-          OMRCacheService.set(imageUri, 'ondevice', fallback.result).catch(() => {});
-        } catch (fallbackErr) {
-          setScoreError(
-            `${e?.message || 'Primary engine failed'}\n` +
-            `Fallback also failed: ${fallbackErr?.message || 'Unknown error'}`
-          );
-        }
-      } else {
-        setScoreError(e?.message || 'Failed to process music sheet');
-      }
+      setScoreError(e?.message || 'Failed to process music sheet');
     } finally {
       setProcessing(false);
       setProcessingStage('');
