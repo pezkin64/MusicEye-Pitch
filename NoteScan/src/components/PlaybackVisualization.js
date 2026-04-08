@@ -12,18 +12,26 @@ import {
 const ACCENT = '#E05A2A';
 const ACCENT_LIGHT = 'rgba(224, 90, 42, 0.18)';
 const CURSOR_WIDTH = 3.5; // Thicker, more visible than 2.5
+const COMPACT_CURSOR_HEIGHT = 46;
 
 const CURSOR_COLORS = [
   { key: 'orange', color: '#E05A2A', highlight: 'rgba(224, 90, 42, 0.12)' },
-  { key: 'green',  color: '#4CAF50', highlight: 'rgba(76, 175, 80, 0.12)' },
+  { key: 'amber',  color: '#F08A45', highlight: 'rgba(240, 138, 69, 0.12)' },
   { key: 'black',  color: '#1A1A1A', highlight: 'rgba(0, 0, 0, 0.06)' },
 ];
 
 const VOICE_COLORS = {
   Soprano: '#E05A2A',
   Alto: '#E8A838',
-  Tenor: '#4CAF50',
+  Tenor: '#F08A45',
   Bass: '#3D7BC9',
+};
+
+const VOICE_FALLBACK_ROW = {
+  Soprano: 0.2,
+  Alto: 0.38,
+  Tenor: 0.62,
+  Bass: 0.8,
 };
 
 const WAVEFORM_HEIGHT = 56;
@@ -32,6 +40,25 @@ const SOLFEGE = ['Do', 'Re', 'Mi', 'Fa', 'So', 'La', 'Ti']; // C D E F G A B
 const MIDI_TO_SOLFEGE_IDX = [0, 0, 1, 1, 2, 3, 3, 4, 4, 5, 5, 6]; // chromatic → solfège index
 
 const BAR_HEIGHT = 6;
+const HIGHLIGHT_ATTACK_SEC = 0.06;
+const HIGHLIGHT_TAIL_SEC = 0.18;
+const ENABLE_SCAN_PLAYHEAD_VISUALS = false;
+
+const DURATION_TO_BEATS = {
+  whole: 4,
+  half: 2,
+  quarter: 1,
+  eighth: 0.5,
+  sixteenth: 0.25,
+  '32nd': 0.125,
+  '64th': 0.0625,
+  dotted_whole: 6,
+  dotted_half: 3,
+  dotted_quarter: 1.5,
+  dotted_eighth: 0.75,
+  dotted_sixteenth: 0.375,
+  dotted_32nd: 0.1875,
+};
 
 /** Memoized waveform note bars — only re-renders when the timeline data changes, not on every currentTime tick */
 const WaveformBars = React.memo(({ filtered, stripW, totalDuration, minMidi, midiRange, pad, usableH }) => (
@@ -83,6 +110,7 @@ export const PlaybackVisualization = ({
   pitchTimeline,
   voiceSelection,
   debugNotes,
+  timelineMode = 'canonical',
 }) => {
   const scrollViewRef = useRef(null);
   const waveformScrollRef = useRef(null);
@@ -95,6 +123,8 @@ export const PlaybackVisualization = ({
   const [imageNaturalWidth, setImageNaturalWidth] = useState(0);
   const [imageNaturalHeight, setImageNaturalHeight] = useState(0);
   const prevSystemRef = useRef(-1);
+
+  const secondsPerBeat = useMemo(() => (tempo > 0 ? 60 / tempo : 0), [tempo]);
 
 
 
@@ -151,6 +181,153 @@ export const PlaybackVisualization = ({
 
   const system = systemBounds[activeSystemIndex];
 
+  const activeSheetNotes = useMemo(() => {
+    if (!debugNotes?.length || !secondsPerBeat || !(isPlaying || currentTime > 0)) {
+      return [];
+    }
+
+    const getEffectiveBeatOffset = (note) => {
+      if (timelineMode === 'compressed' && Number.isFinite(note.beatOffsetCompressed)) {
+        return note.beatOffsetCompressed;
+      }
+      if (Number.isFinite(note.beatOffsetCanonical)) {
+        return note.beatOffsetCanonical;
+      }
+      return note.beatOffset;
+    };
+
+    const highlighted = [];
+    for (const n of debugNotes) {
+      const beatOffset = getEffectiveBeatOffset(n);
+      if (n.type !== 'note' || !Number.isFinite(beatOffset) || !Number.isFinite(n.x) || !Number.isFinite(n.y)) {
+        continue;
+      }
+      if (voiceSelection && voiceSelection[n.voice] === false) {
+        continue;
+      }
+
+      const durationBeats = Number.isFinite(n.tiedBeats)
+        ? n.tiedBeats
+        : Number.isFinite(n.durationBeats)
+          ? n.durationBeats
+          : (DURATION_TO_BEATS[n.duration] || 1);
+
+      const startSec = beatOffset * secondsPerBeat;
+      const endSec = (beatOffset + durationBeats) * secondsPerBeat;
+
+      // Show from onset and keep a short trail after note end.
+      if (currentTime < startSec || currentTime > (endSec + HIGHLIGHT_TAIL_SEC)) {
+        continue;
+      }
+
+      let intensity = 1;
+      if (currentTime < (startSec + HIGHLIGHT_ATTACK_SEC)) {
+        intensity = Math.max(0.35, (currentTime - startSec) / HIGHLIGHT_ATTACK_SEC);
+      } else if (currentTime > endSec) {
+        intensity = Math.max(0, 1 - ((currentTime - endSec) / HIGHLIGHT_TAIL_SEC));
+      }
+
+      const pulse = currentTime < (startSec + HIGHLIGHT_ATTACK_SEC)
+        ? 1 + (1 - Math.min(1, (currentTime - startSec) / HIGHLIGHT_ATTACK_SEC)) * 0.12
+        : 1;
+
+      highlighted.push({
+        ...n,
+        _highlightIntensity: intensity,
+        _highlightPulse: pulse,
+      });
+    }
+
+    return highlighted;
+  }, [currentTime, debugNotes, isPlaying, secondsPerBeat, voiceSelection, timelineMode]);
+
+  const hasUsableNoteGeometry = useMemo(() => {
+    if (!debugNotes?.length || !imageNaturalWidth || !imageNaturalHeight) return false;
+    const realNotes = debugNotes.filter((n) => n.type === 'note');
+    if (realNotes.length === 0) return false;
+    const positioned = realNotes.filter(
+      (n) => Number.isFinite(n.x) && Number.isFinite(n.y) && n.x > 0 && n.y > 0
+    );
+    // Require a meaningful portion of notes to have real positions.
+    return (positioned.length / realNotes.length) >= 0.2;
+  }, [debugNotes, imageNaturalWidth, imageNaturalHeight]);
+
+  const activeFallbackAnchors = useMemo(() => {
+    if (activeSheetNotes.length > 0 && hasUsableNoteGeometry) return [];
+    const vp = activeEntry?.voicePositions || [];
+    const baseAnchors = vp.length > 0 ? vp : [
+      { voice: 'Soprano' },
+      { voice: 'Alto' },
+      { voice: 'Tenor' },
+      { voice: 'Bass' },
+    ];
+
+    return baseAnchors
+      .filter((p) => !voiceSelection || voiceSelection[p.voice] !== false)
+      .map((p) => ({
+        x: Number.isFinite(p.x) ? p.x : null,
+        y: Number.isFinite(p.y) ? p.y : null,
+        voice: p.voice,
+        _highlightIntensity: 0.95,
+        _highlightPulse: 1,
+      }));
+  }, [activeEntry, activeSheetNotes.length, hasUsableNoteGeometry, voiceSelection]);
+
+  const activeSheetNoteMetrics = useMemo(() => {
+    if (!debugNotes?.length || systemBounds.length === 0) {
+      return {};
+    }
+
+    const realNotes = debugNotes.filter(
+      (n) => n.type === 'note' && Number.isFinite(n.x) && Number.isFinite(n.y)
+    );
+
+    const metricsBySystem = {};
+    for (let sysIdx = 0; sysIdx < systemBounds.length; sysIdx++) {
+      const sysNotes = realNotes.filter((n) => (n.systemIndex ?? 0) === sysIdx);
+      const sys = systemBounds[sysIdx];
+      const systemHeight = sys ? Math.max(1, sys.bottom - sys.top) : 0;
+
+      if (sysNotes.length === 0) {
+        const fallback = Math.max(8, Math.min(18, systemHeight > 0 ? systemHeight / 18 : 12));
+        metricsBySystem[sysIdx] = {
+          noteW: fallback * 1.35,
+          noteH: fallback,
+          halo: fallback * 1.9,
+        };
+        continue;
+      }
+
+      const ys = [...new Set(sysNotes.map((n) => Math.round(n.y * 10) / 10))].sort((a, b) => a - b);
+      const diffs = [];
+      for (let i = 1; i < ys.length; i++) {
+        const delta = ys[i] - ys[i - 1];
+        if (delta > 1 && delta < 120) diffs.push(delta);
+      }
+      diffs.sort((a, b) => a - b);
+
+      let step = 0;
+      if (diffs.length > 0) {
+        const take = Math.max(1, Math.floor(diffs.length * 0.25));
+        step = diffs.slice(0, take).reduce((sum, value) => sum + value, 0) / take;
+      }
+
+      if (!Number.isFinite(step) || step <= 0) {
+        step = systemHeight > 0 ? systemHeight / 18 : 12;
+      }
+
+      const noteH = Math.max(8, Math.min(18, step * 1.65));
+      const noteW = noteH * 1.35;
+      metricsBySystem[sysIdx] = {
+        noteW,
+        noteH,
+        halo: noteH * 1.9,
+      };
+    }
+
+    return metricsBySystem;
+  }, [debugNotes, systemBounds]);
+
   // ─── Layout: fit WIDTH to container, vertical scroll for height ───
   const hasImage = imageNaturalWidth > 0 && imageNaturalHeight > 0;
   let zoomScale = 1;
@@ -186,12 +363,23 @@ export const PlaybackVisualization = ({
     });
   }
 
+  // Compact cursor marker (not a full-page bar)
+  let cursorHeight = COMPACT_CURSOR_HEIGHT;
   let cursorTop = 0;
-  let cursorHeight = renderHeight;
   if (system) {
-    const pad = Math.max(4, (system.bottom - system.top) * 0.1);
-    cursorTop = (system.top - pad) * zoomScale;
-    cursorHeight = (system.bottom - system.top + pad * 2) * zoomScale;
+    const systemTop = system.top * zoomScale;
+    const systemBottom = system.bottom * zoomScale;
+    const yCenter = Number.isFinite(activeEntry?.y)
+      ? activeEntry.y * zoomScale
+      : ((systemTop + systemBottom) / 2);
+    const maxTop = Math.max(systemTop, systemBottom - cursorHeight);
+    cursorTop = Math.max(systemTop, Math.min(maxTop, yCenter - cursorHeight / 2));
+  } else {
+    const yCenter = Number.isFinite(activeEntry?.y)
+      ? activeEntry.y * zoomScale
+      : (renderHeight * 0.5);
+    const maxTop = Math.max(0, renderHeight - cursorHeight);
+    cursorTop = Math.max(0, Math.min(maxTop, yCenter - cursorHeight / 2));
   }
 
   // ─── Progress ratio ───
@@ -223,7 +411,8 @@ export const PlaybackVisualization = ({
     waveformScrollRef.current.scrollTo({ x: targetX, animated: false });
   }, [currentTime, isPlaying, totalDuration, containerWidth]);
 
-  const showCursor = (isPlaying || currentTime > 0) && positions.length > 0;
+  const showCursor = ENABLE_SCAN_PLAYHEAD_VISUALS && (isPlaying || currentTime > 0) && positions.length > 0;
+  const showScanHighlights = ENABLE_SCAN_PLAYHEAD_VISUALS;
 
   // ─── Tap-to-seek on the sheet image ───
   const handleSheetPress = useCallback(
@@ -298,8 +487,8 @@ export const PlaybackVisualization = ({
         setContainerHeight(e.nativeEvent.layout.height);
       }}
     >
-      {/* ─── Playhead color picker + waveform toggle ─── */}
-      <View style={styles.colorPicker}>
+      {/* ─── Scan controls (disabled when rendered mode is primary) ─── */}
+      {ENABLE_SCAN_PLAYHEAD_VISUALS && <View style={styles.colorPicker}>
         {CURSOR_COLORS.map((c, i) => (
           <TouchableOpacity
             key={c.key}
@@ -337,10 +526,10 @@ export const PlaybackVisualization = ({
             </TouchableOpacity>
           </>
         )}
-      </View>
+      </View>}
 
       {/* ─── Pitch waveform (scrollable for long pieces) ─── */}
-      {showWaveform && pitchTimeline && pitchTimeline.length > 0 && totalDuration > 0 && containerWidth > 0 && (() => {
+      {ENABLE_SCAN_PLAYHEAD_VISUALS && showWaveform && pitchTimeline && pitchTimeline.length > 0 && totalDuration > 0 && containerWidth > 0 && (() => {
         const filtered = voiceSelection
           ? pitchTimeline.filter(n => voiceSelection[n.voice])
           : pitchTimeline;
@@ -535,15 +724,63 @@ export const PlaybackVisualization = ({
                 />
               )}
 
-              {/* Played-region highlight */}
-              {showCursor && system && (
-                <View
-                  style={[
-                    styles.systemHighlight,
-                    { top: cursorTop, height: cursorHeight, width: clampedCursorX, backgroundColor: cursorTheme.highlight },
-                  ]}
-                />
-              )}
+              {/* Derived active note highlights */}
+              {showScanHighlights && ((activeSheetNotes.length > 0 && hasUsableNoteGeometry)
+                ? activeSheetNotes
+                : activeFallbackAnchors
+              ).map((n, i) => {
+                const sx = (activeSheetNotes.length > 0 && hasUsableNoteGeometry && Number.isFinite(n.x) && n.x > 0)
+                  ? n.x * zoomScale
+                  : clampedCursorX;
+                const fallbackRow = VOICE_FALLBACK_ROW[n.voice] ?? 0.5;
+                const sy = (activeSheetNotes.length > 0 && hasUsableNoteGeometry && Number.isFinite(n.y) && n.y > 0)
+                  ? n.y * zoomScale
+                  : (cursorTop + cursorHeight * fallbackRow);
+                const color = VOICE_COLORS[n.voice] || cursorTheme.color;
+                const intensity = n._highlightIntensity ?? 1;
+                const pulse = n._highlightPulse ?? 1;
+                const sysMetrics = activeSheetNoteMetrics[n.systemIndex ?? 0] || {
+                  noteW: 12,
+                  noteH: 9,
+                  halo: 17,
+                };
+                const noteW = Math.max(10, sysMetrics.noteW * zoomScale * pulse);
+                const noteH = Math.max(7, sysMetrics.noteH * zoomScale * pulse);
+                const haloSize = Math.max(16, sysMetrics.halo * zoomScale * pulse);
+                return (
+                  <View key={`an-${i}`} style={styles.activeNoteWrap} pointerEvents="none">
+                    <View
+                      style={[
+                        styles.activeNoteHalo,
+                        {
+                          left: sx - haloSize / 2,
+                          top: sy - haloSize / 2,
+                          width: haloSize,
+                          height: haloSize,
+                          borderColor: color,
+                          backgroundColor: 'rgba(255,255,255,0.55)',
+                          opacity: 0.45 + intensity * 0.45,
+                        },
+                      ]}
+                    />
+                    <View
+                      style={[
+                        styles.activeNoteDot,
+                        {
+                          left: sx - noteW / 2,
+                          top: sy - noteH / 2,
+                          width: noteW,
+                          height: noteH,
+                          borderRadius: noteH / 2,
+                          backgroundColor: color,
+                          transform: [{ rotate: '-14deg' }],
+                          opacity: 0.5 + intensity * 0.45,
+                        },
+                      ]}
+                    />
+                  </View>
+                );
+              })}
 
               {/* Debug overlay: detected note positions */}
               {showDebugNotes && debugNotes && debugNotes.length > 0 && hasImage && (() => {
@@ -753,11 +990,24 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 0 },
     elevation: 8,
   },
-  systemHighlight: {
+  activeNoteWrap: {
     position: 'absolute',
-    left: 0,
-    backgroundColor: 'rgba(224, 90, 42, 0.12)',
-    zIndex: 5,
+    zIndex: 11,
+  },
+  activeNoteHalo: {
+    position: 'absolute',
+    borderWidth: 2,
+    borderRadius: 999,
+    opacity: 0.85,
+    shadowColor: '#000',
+    shadowOpacity: 0.14,
+    shadowRadius: 3,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 2,
+  },
+  activeNoteDot: {
+    position: 'absolute',
+    opacity: 0.95,
   },
   noImage: {
     height: 200,

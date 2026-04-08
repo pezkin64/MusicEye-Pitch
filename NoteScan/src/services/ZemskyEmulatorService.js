@@ -9,7 +9,7 @@
  */
 import { File } from 'expo-file-system';
 import { MusicXMLParser } from './MusicXMLParser';
-import { normalizeMusicXmlSoftwareTag } from './MusicXmlBranding';
+import { injectDeterministicNoteIds, normalizeMusicXmlSoftwareTag } from './MusicXmlBranding';
 
 class ZemskyEmulatorServiceClass {
   _serverUrl = 'http://127.0.0.1:8084';
@@ -120,6 +120,17 @@ class ZemskyEmulatorServiceClass {
             90000
           );
 
+          if (!response.ok) {
+            const body = await response.text().catch(() => '');
+            lastErr = new Error(
+              `HTTP ${response.status} from ${baseUrl}${body ? `: ${body.substring(0, 300)}` : ''}`
+            );
+            if (attempt < 2) {
+              await new Promise((resolve) => setTimeout(resolve, 350));
+            }
+            continue;
+          }
+
           if (baseUrl !== this.getServerUrl()) this.setServerUrl(baseUrl);
           return response;
         } catch (e) {
@@ -150,7 +161,12 @@ class ZemskyEmulatorServiceClass {
 
     const fileName = imageUri.split('/').pop() || 'sheet_music.jpg';
     const ext = fileName.split('.').pop().toLowerCase();
-    const mimeType = ext === 'png' ? 'image/png' : 'image/jpeg';
+    const mimeType =
+      ext === 'png' ? 'image/png'
+      : (ext === 'jpg' || ext === 'jpeg') ? 'image/jpeg'
+      : (ext === 'heic' || ext === 'heif') ? 'image/heic'
+      : ext === 'webp' ? 'image/webp'
+      : 'image/jpeg';
 
     report('Sending image to Zemsky emulator engine...');
 
@@ -168,21 +184,30 @@ class ZemskyEmulatorServiceClass {
       );
     }
 
-    if (!response.ok) {
-      const body = await response.text().catch(() => '');
-      throw new Error(`Zemsky emulator returned status ${response.status}. ${body.substring(0, 500)}`);
-    }
-
     report('Parsing MusicXML...');
-    const json = await response.json();
+    const raw = await response.text();
+    let json;
+    try {
+      json = JSON.parse(raw);
+    } catch (e) {
+      throw new Error(
+        `Zemsky emulator returned a non-JSON response: ${e.message}` +
+        (raw ? `\n\n${raw.substring(0, 500)}` : '')
+      );
+    }
     
-    const musicXml = normalizeMusicXmlSoftwareTag(json.musicxml);
+    const musicXml = injectDeterministicNoteIds(
+      normalizeMusicXmlSoftwareTag(json.musicxml)
+    );
     if (!musicXml || musicXml.length < 50) {
       throw new Error('Zemsky emulator returned an empty or invalid MusicXML payload');
     }
 
-    const parsed = MusicXMLParser.parse(musicXml, { strictMusicXml: true });
-    
+    const parsed = MusicXMLParser.parse(musicXml, {
+      strictMusicXml: true,
+      collapseTies: true,
+    });
+
     report('Processing complete!');
 
     return {

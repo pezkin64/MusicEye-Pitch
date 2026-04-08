@@ -549,7 +549,7 @@ export class MusicXMLParser {
       if (selectedTempo < 20 && tempoMatches.length > 1) {
         selectedTempo = parseFloat(tempoMatches[tempoMatches.length - 2][1]);
       }
-      // If still unrealistic, reject it (OMR calibration error like Audiveris tempo=8)
+      // If still unrealistic, reject it (OMR calibration error like tempo=8)
       if (selectedTempo < 20) {
         selectedTempo = null;
       }

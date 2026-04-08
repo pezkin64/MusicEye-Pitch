@@ -1,7 +1,7 @@
 {
   "name": "notescan",
   "version": "2.0.0",
-  "description": "React Native sheet music scanner — powered by Audiveris server-side OMR",
+  "description": "Music Eye powered by ZemEmu",
   "main": "node_modules/expo/AppEntry.js",
   "scripts": {
     "start": "expo start",
@@ -28,7 +28,8 @@
     "react-native-audio-api": "^0.11.6",
     "react-native-gesture-handler": "~2.28.0",
     "react-native-svg": "15.12.1",
-    "react-native-web": "^0.21.2"
+    "react-native-web": "^0.21.2",
+    "react-native-webview": "^13.12.5"
   },
   "devDependencies": {
     "@babel/core": "^7.24.0",

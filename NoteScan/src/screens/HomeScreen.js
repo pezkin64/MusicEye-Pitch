@@ -35,7 +35,7 @@ export const HomeScreen = ({ onNavigate, onPickFromGallery, onPickFromCamera }) 
   };
 
   const statusLabel =
-    serverStatus === null ? 'Checking Zemsky emulator...' : serverStatus ? 'Zemsky emulator connected' : 'Zemsky emulator unreachable';
+    serverStatus === null ? 'Checking ZemEmu...' : serverStatus ? 'ZemEmu connected' : 'ZemEmu unreachable';
 
   return (
     <View style={styles.container}>
@@ -46,7 +46,7 @@ export const HomeScreen = ({ onNavigate, onPickFromGallery, onPickFromCamera }) 
           <Text style={styles.title}>Music Eye</Text>
           <SvgXml xml={logoXml} width={72} height={48} />
         </View>
-        <Text style={styles.subtitle}>Scan and play sheet music in seconds</Text>
+        <Text style={styles.subtitle}>Powered by ZemEmu • scan and play in seconds</Text>
 
         {/* Engine / status indicator */}
         <TouchableOpacity style={styles.statusRow} onPress={checkServer}>

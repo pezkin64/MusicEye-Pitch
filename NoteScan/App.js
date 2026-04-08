@@ -101,12 +101,12 @@ export default function App() {
         <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F9F7F1' }}>
           <Text style={{ fontSize: 18, color: '#3E3C37', marginBottom: 20 }}>❓ Help</Text>
           <Text style={{ fontSize: 14, color: '#6E675E', marginBottom: 20, paddingHorizontal: 24, textAlign: 'center' }}>
-            Music Eye uses OMR (Optical Music Recognition) servers to scan
+            Music Eye uses OMR (Optical Music Recognition) to scan
             sheet music images and convert them to playable notes.{'\n\n'}
             1. Take a photo or pick an image of sheet music{'\n'}
-            2. The image is sent to the Audiveris OMR server{'\n'}
-            3. The returned MusicXML is converted to playable audio{'\n\n'}
-            Configure the server URL in Settings.
+            2. The image is sent to the ZemEmu engine{"\n"}
+            3. Returned MusicXML is converted to playable audio{"\n\n"}
+            In Settings, select ZemEmu and run ZemskyHarness in the same Android emulator.
           </Text>
           <TouchableOpacity onPress={() => setCurrentScreen('home')}>
             <Text style={{ color: '#6E675E', fontSize: 16, fontWeight: '600' }}>← Back to Home</Text>

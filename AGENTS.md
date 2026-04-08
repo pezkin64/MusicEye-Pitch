@@ -64,9 +64,9 @@ The user's goal is to **commercialize this app** and compete with David Zemsky's
 
 ## 3. On-Device OMR Engine (the core new work)
 
-### Architecture
 
-Inspired by David Zemsky's `libsource-lib.so` (reverse-engineered in `ASSETS/zemsky-reverse-engineering.md`). Pure JavaScript — no TensorFlow, no native modules, no server.
+
+
 
 ### Pipeline (OnDeviceOMR.processGrayImage)
 

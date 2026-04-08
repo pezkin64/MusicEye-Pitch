@@ -385,7 +385,7 @@ export class MusicXMLParser {
     }
 
     // Check how many of the 4 SATB voices actually have notes.
-    // Audiveris often puts everything in voice 1 → only Soprano (single staff)
+    // Some OMR outputs put everything in voice 1 → only Soprano (single staff)
     // or Soprano + Tenor (grand staff). When ≥2 voices are empty, redistribute
     // using a hybrid per-beat + quartile approach:
     //   • Beats with 2+ simultaneous notes: top→S, next→A, next→T, bottom→B

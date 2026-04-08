@@ -32,6 +32,9 @@ export class AudioPlaybackService {
   static _noteEvents = null;       // [{ midiNote, velocity, beatOffset, durationBeats, voice }]
   static _timingBeatData = null;   // [{ beatOffset, x, y, staffIndex, systemIndex, isRest }]
   static _totalBeats = 0;
+  static _totalBeatsCanonical = 0;
+  static _totalBeatsCompressed = 0;
+  static _timelineMode = 'canonical'; // 'canonical' | 'compressed'
   static _playStartTime = 0;       // audioCtx.currentTime when play began
   static _playStartOffset = 0;     // seek offset in seconds
   static _positionTimer = null;
@@ -100,6 +103,13 @@ export class AudioPlaybackService {
 
   static midiToFrequency(midiNote) {
     return 440 * Math.pow(2, (midiNote - 69) / 12);
+  }
+
+  // Use high precision normalization to avoid float-key noise
+  // without collapsing distinct nearby musical onsets.
+  static _normalizeBeatOffset(beat) {
+    if (!Number.isFinite(beat)) return 0;
+    return Math.round(beat * 1000000) / 1000000;
   }
 
   /* ─── Waveform generation ─── */
@@ -255,7 +265,9 @@ export class AudioPlaybackService {
    * Prepare note events from scoreData (parse once, reuse across tempos).
    * Returns { noteEvents, timingBeatData, totalBeats }.
    */
-  static prepareNoteEvents(notes) {
+  static prepareNoteEvents(notes, options = {}) {
+    const timelineMode = options.timelineMode === 'compressed' ? 'compressed' : 'canonical';
+    this._timelineMode = timelineMode;
     const getBeats = (n) => n.tiedBeats || n.durationBeats || ({
       whole: 4, half: 2, quarter: 1, eighth: 0.5, sixteenth: 0.25,
       '32nd': 0.125, dotted_whole: 6, dotted_half: 3, dotted_quarter: 1.5,
@@ -279,12 +291,16 @@ export class AudioPlaybackService {
     if (totalBeats === 0) totalBeats = 1; // avoid division by zero
     
     const noteFormatted = realNotes.map(n => {
+      const canonicalBeatOffset = this._normalizeBeatOffset(n.beatOffset);
       const x = n.x || 0; // Use OCR x if available, else 0 (will be synthesized below)
       const y = n.y || 0;
       return {
+        xmlId: n.xmlId || n.noteId || n.id || null,
         midiNote: n.midiNote,
         velocity: 100,
-        beatOffset: Math.round(n.beatOffset * 1000) / 1000,
+        beatOffsetCanonical: canonicalBeatOffset,
+        beatOffsetCompressed: canonicalBeatOffset,
+        beatOffset: canonicalBeatOffset, // Backward-compatible alias to compressed timeline
         durationBeats: getBeats(n),
         voice: n.voice || 'Soprano',
         x,
@@ -306,28 +322,78 @@ export class AudioPlaybackService {
       };
     });
 
+    const rests = notes
+      .filter(n => n.type === 'rest' && Number.isFinite(n.beatOffset))
+      .map((r) => {
+        const canonicalBeatOffset = this._normalizeBeatOffset(r.beatOffset);
+        return {
+          ...r,
+          beatOffsetCanonical: canonicalBeatOffset,
+          beatOffsetCompressed: canonicalBeatOffset,
+          beatOffset: canonicalBeatOffset, // Backward-compatible alias to compressed timeline
+        };
+      });
+
     // Build beat-based timing map (beat positions → coordinates)
-    const beatMap = new Map();
+    let beatMap = new Map();
     for (const e of noteEvents) {
       if (!beatMap.has(e.beatOffset)) beatMap.set(e.beatOffset, []);
       beatMap.get(e.beatOffset).push(e);
     }
-    const beatPositions = [...beatMap.keys()].sort((a, b) => a - b);
+    let beatPositions = [...beatMap.keys()].sort((a, b) => a - b);
 
     // Diagnostic: detect true timing holes between note groups.
-    // A hole exists when the next onset starts after all notes at current onset have ended.
+    // A hole exists when the next onset starts after all notes at current onset have ended
+    // and no rest spans that region.
     const timingHoles = [];
+    const getUncoveredHoleBeats = (startBeat, endBeat) => {
+      if (endBeat <= startBeat) return 0;
+
+      const overlaps = [];
+      for (const r of rests) {
+        const restStart = r.beatOffset;
+        const restEnd = restStart + getBeats(r);
+        const overlapStart = Math.max(startBeat, restStart);
+        const overlapEnd = Math.min(endBeat, restEnd);
+        if (overlapEnd - overlapStart > 0.0001) {
+          overlaps.push([overlapStart, overlapEnd]);
+        }
+      }
+
+      if (overlaps.length === 0) return endBeat - startBeat;
+
+      overlaps.sort((a, b) => a[0] - b[0]);
+      let covered = 0;
+      let [curStart, curEnd] = overlaps[0];
+      for (let i = 1; i < overlaps.length; i++) {
+        const [s, e] = overlaps[i];
+        if (s <= curEnd + 0.0001) {
+          curEnd = Math.max(curEnd, e);
+        } else {
+          covered += (curEnd - curStart);
+          curStart = s;
+          curEnd = e;
+        }
+      }
+      covered += (curEnd - curStart);
+      return Math.max(0, (endBeat - startBeat) - covered);
+    };
+
     for (let i = 0; i < beatPositions.length - 1; i++) {
       const bo = beatPositions[i];
       const nextBo = beatPositions[i + 1];
       const group = beatMap.get(bo) || [];
       const maxDur = group.reduce((mx, n) => Math.max(mx, n.durationBeats || 0), 0);
-      const holeBeats = nextBo - (bo + maxDur);
-      if (holeBeats > 0.001) {
-        timingHoles.push({ startBeat: bo + maxDur, endBeat: nextBo, holeBeats });
+      const holeStart = bo + maxDur;
+      const rawHoleBeats = nextBo - holeStart;
+      if (rawHoleBeats > 0.001) {
+        const holeBeats = getUncoveredHoleBeats(holeStart, nextBo);
+        if (holeBeats > 0.001) {
+          timingHoles.push({ startBeat: holeStart, endBeat: nextBo, holeBeats });
+        }
       }
     }
-    if (timingHoles.length > 0) {
+    if (timelineMode === 'compressed' && timingHoles.length > 0) {
       const sortedHoles = [...timingHoles].sort((a, b) => b.holeBeats - a.holeBeats);
       const maxHole = sortedHoles[0].holeBeats;
       const totalHoleBeats = timingHoles.reduce((s, h) => s + h.holeBeats, 0);
@@ -339,6 +405,54 @@ export class AudioPlaybackService {
           .map(h => `${h.startBeat.toFixed(2)}-${h.endBeat.toFixed(2)}(${h.holeBeats.toFixed(2)})`)
           .join(', ')
       );
+
+      // Final silence compression: remap timeline to remove uncovered gaps.
+      // Preserve event order and durations while shifting later onsets earlier.
+      const compressionSegments = [...timingHoles]
+        .sort((a, b) => a.startBeat - b.startBeat)
+        .map(h => ({
+          startBeat: h.startBeat,
+          endBeat: h.endBeat,
+          compressBy: h.holeBeats,
+        }));
+
+      const remapBeatOffset = (beat) => {
+        let shift = 0;
+        for (const seg of compressionSegments) {
+          if (beat >= seg.endBeat) {
+            shift += seg.compressBy;
+          } else if (beat > seg.startBeat) {
+            shift += (beat - seg.startBeat);
+            break;
+          } else {
+            break;
+          }
+        }
+        return Math.max(0, beat - shift);
+      };
+
+      for (const e of noteEvents) {
+        const compressed = this._normalizeBeatOffset(remapBeatOffset(e.beatOffsetCanonical));
+        e.beatOffsetCompressed = compressed;
+        e.beatOffset = compressed;
+      }
+      for (const r of rests) {
+        const compressed = this._normalizeBeatOffset(remapBeatOffset(r.beatOffsetCanonical));
+        r.beatOffsetCompressed = compressed;
+        r.beatOffset = compressed;
+      }
+
+      totalBeats = Math.max(1, totalBeats - totalHoleBeats);
+
+      // Rebuild beat map after timeline compression for timing data generation.
+      beatMap = new Map();
+      for (const e of noteEvents) {
+        if (!beatMap.has(e.beatOffset)) beatMap.set(e.beatOffset, []);
+        beatMap.get(e.beatOffset).push(e);
+      }
+      beatPositions = [...beatMap.keys()].sort((a, b) => a - b);
+
+      console.log(`⏱️ Silence compression: removed ${totalHoleBeats.toFixed(2)} beats (${compressionSegments.length} gaps)`);
     }
 
     const timingBeatData = [];
@@ -350,6 +464,8 @@ export class AudioPlaybackService {
       const voicePositions = group.map(n => ({ voice: n.voice, y: n.y, x: n.x }));
       timingBeatData.push({
         beatOffset: bo,
+        beatOffsetCanonical: Math.min(...group.map((n) => n.beatOffsetCanonical ?? n.beatOffset)),
+        beatOffsetCompressed: bo,
         x: avgX,
         y: avgY,
         voicePositions,
@@ -360,13 +476,14 @@ export class AudioPlaybackService {
     }
 
     // Add rests
-    const rests = notes.filter(n => n.type === 'rest' && typeof n.beatOffset === 'number');
     for (const r of rests) {
-      const rbo = Math.round(r.beatOffset * 1000) / 1000;
+      const rbo = this._normalizeBeatOffset(r.beatOffset);
       if (!beatMap.has(rbo)) {
         const synthX = (rbo / totalBeats) * SYNTHESIZED_WIDTH;
         timingBeatData.push({
           beatOffset: rbo,
+          beatOffsetCanonical: r.beatOffsetCanonical ?? rbo,
+          beatOffsetCompressed: rbo,
           x: r.x > 0 ? r.x : synthX,
           y: r.y || 0,
           staffIndex: r.staffIndex,
@@ -377,31 +494,57 @@ export class AudioPlaybackService {
     }
     timingBeatData.sort((a, b) => a.beatOffset - b.beatOffset);
 
+    // Ensure the active beatOffset alias matches the selected timeline mode.
+    for (const e of noteEvents) {
+      e.beatOffset = timelineMode === 'compressed'
+        ? (e.beatOffsetCompressed ?? e.beatOffsetCanonical ?? e.beatOffset)
+        : (e.beatOffsetCanonical ?? e.beatOffsetCompressed ?? e.beatOffset);
+    }
+
     this._noteEvents = noteEvents;
     this._timingBeatData = timingBeatData;
-    this._totalBeats = totalBeats;
+    this._totalBeats = timelineMode === 'compressed'
+      ? totalBeats
+      : noteEvents.reduce(
+        (mx, e) => Math.max(mx, (e.beatOffsetCanonical ?? e.beatOffset) + (e.durationBeats || 0)),
+        0
+      );
+    this._totalBeatsCanonical = noteEvents.reduce(
+      (mx, e) => Math.max(mx, (e.beatOffsetCanonical ?? e.beatOffset) + (e.durationBeats || 0)),
+      0
+    );
+    this._totalBeatsCompressed = totalBeats;
 
     // Pre-generate all waveforms so play/tempo-change is instant
     this._precacheWaveforms();
 
-    console.log(`🎵 Prepared ${noteEvents.length} note events (+${rests.length} rests), ${totalBeats.toFixed(1)} total beats, synthesized x from beatOffset`);
-    return { noteEvents, timingBeatData, totalBeats };
+    console.log(`🎵 Prepared ${noteEvents.length} note events (+${rests.length} rests), ${this._totalBeats.toFixed(1)} total beats, mode=${timelineMode}`);
+    return { noteEvents, timingBeatData, totalBeats: this._totalBeats, timelineMode };
   }
 
   /**
    * Build the timing map for a given tempo (pure arithmetic, instant).
    */
-  static buildTimingMap(tempo) {
+  static buildTimingMap(tempo, timelineMode = this._timelineMode) {
     if (!this._timingBeatData) return [];
     const spb = 60 / tempo;
+    const useCompressed = timelineMode === 'compressed';
     return this._timingBeatData.map(t => ({
-      time: t.beatOffset * spb,
+      time: (useCompressed
+        ? (t.beatOffsetCompressed ?? t.beatOffset)
+        : (t.beatOffsetCanonical ?? t.beatOffset)) * spb,
+      beatOffset: useCompressed
+        ? (t.beatOffsetCompressed ?? t.beatOffset)
+        : (t.beatOffsetCanonical ?? t.beatOffset),
+      beatOffsetCanonical: t.beatOffsetCanonical ?? t.beatOffset,
+      beatOffsetCompressed: t.beatOffsetCompressed ?? t.beatOffset,
       x: t.x,
       y: t.y,
       voicePositions: t.voicePositions || [],
       staffIndex: t.staffIndex,
       systemIndex: t.systemIndex,
       isRest: t.isRest,
+      timelineMode,
     }));
   }
 
@@ -412,9 +555,14 @@ export class AudioPlaybackService {
   static buildPitchTimeline(tempo) {
     if (!this._noteEvents || !tempo) return [];
     const spb = 60 / tempo;
+    const useCompressed = this._timelineMode === 'compressed';
     return this._noteEvents.map(e => ({
-      time: e.beatOffset * spb,
-      endTime: (e.beatOffset + e.durationBeats) * spb,
+      time: (useCompressed
+        ? (e.beatOffsetCompressed ?? e.beatOffset)
+        : (e.beatOffsetCanonical ?? e.beatOffset)) * spb,
+      endTime: ((useCompressed
+        ? (e.beatOffsetCompressed ?? e.beatOffset)
+        : (e.beatOffsetCanonical ?? e.beatOffset)) + e.durationBeats) * spb,
       midiNote: e.midiNote,
       voice: e.voice,
     })).sort((a, b) => a.time - b.time);
@@ -690,8 +838,7 @@ export class AudioPlaybackService {
     const hasBeatOffset = notes.some(n => typeof n.beatOffset === 'number' && Number.isFinite(n.beatOffset));
 
     if (!hasBeatOffset) {
-      // Legacy path: use x-position grouping (old behavior)
-      return this._createCombinedAudioLegacy(notes, tempo, systemsMetadata);
+      throw new Error('Clean pipeline requires beatOffset timing data; legacy x-position fallback is disabled.');
     }
 
     // ── Beat-offset-based rendering (new, correct path) ──
@@ -710,7 +857,7 @@ export class AudioPlaybackService {
     // Group notes by beatOffset (notes with same beatOffset play together)
     const beatMap = new Map(); // beatOffset → [note, ...]
     for (const n of realNotes) {
-      const bo = Math.round(n.beatOffset * 1000) / 1000; // round to avoid float issues
+      const bo = this._normalizeBeatOffset(n.beatOffset);
       if (!beatMap.has(bo)) beatMap.set(bo, []);
       beatMap.get(bo).push(n);
     }
@@ -730,9 +877,20 @@ export class AudioPlaybackService {
       const avgX = group.reduce((s, n) => s + (n.x || 0), 0) / group.length;
       const avgY = group.reduce((s, n) => s + (n.y || 0), 0) / group.length;
       const si = group[0].staffIndex;
+      const voicePositions = group.map((n) => ({
+        voice: n.voice,
+        x: Number.isFinite(n.x) ? n.x : avgX,
+        y: Number.isFinite(n.y) ? n.y : avgY,
+      }));
 
       timingMap.push({
-        time, x: avgX, y: avgY, staffIndex: si, systemIndex: group[0].systemIndex ?? 0, isRest: false,
+        time,
+        x: avgX,
+        y: avgY,
+        voicePositions,
+        staffIndex: si,
+        systemIndex: group[0].systemIndex ?? 0,
+        isRest: false,
       });
 
       const noteEntries = group.map(n => ({
@@ -751,7 +909,7 @@ export class AudioPlaybackService {
     for (const r of rests) {
       const time = r.beatOffset * secondsPerBeat;
       // Only add if no note event exists at this time
-      if (!beatMap.has(Math.round(r.beatOffset * 1000) / 1000)) {
+      if (!beatMap.has(this._normalizeBeatOffset(r.beatOffset))) {
         timingMap.push({
           time, x: r.x || 0, y: r.y || 0, staffIndex: r.staffIndex, systemIndex: r.systemIndex ?? 0, isRest: true,
         });
@@ -850,7 +1008,7 @@ export class AudioPlaybackService {
       const realNotes = notes.filter(n => n.type !== 'rest' && n.midiNote != null);
       beatMap = new Map();
       for (const n of realNotes) {
-        const bo = Math.round(n.beatOffset * 1000) / 1000;
+        const bo = this._normalizeBeatOffset(n.beatOffset);
         if (!beatMap.has(bo)) beatMap.set(bo, []);
         beatMap.get(bo).push(n);
       }
@@ -868,10 +1026,23 @@ export class AudioPlaybackService {
       const time = bo * secondsPerBeat;
       const avgX = group.reduce((s, n) => s + (n.x || 0), 0) / group.length;
       const avgY = group.reduce((s, n) => s + (n.y || 0), 0) / group.length;
-      timingMap.push({ time, x: avgX, y: avgY, staffIndex: group[0].staffIndex, systemIndex: group[0].systemIndex ?? 0, isRest: false });
+      const voicePositions = group.map((n) => ({
+        voice: n.voice,
+        x: Number.isFinite(n.x) ? n.x : avgX,
+        y: Number.isFinite(n.y) ? n.y : avgY,
+      }));
+      timingMap.push({
+        time,
+        x: avgX,
+        y: avgY,
+        voicePositions,
+        staffIndex: group[0].staffIndex,
+        systemIndex: group[0].systemIndex ?? 0,
+        isRest: false,
+      });
     }
     for (const r of rests) {
-      const rbo = Math.round(r.beatOffset * 1000) / 1000;
+      const rbo = this._normalizeBeatOffset(r.beatOffset);
       if (!beatMap.has(rbo)) {
         timingMap.push({ time: r.beatOffset * secondsPerBeat, x: r.x || 0, y: r.y || 0, staffIndex: r.staffIndex, systemIndex: r.systemIndex ?? 0, isRest: true });
       }
@@ -1095,8 +1266,23 @@ export class AudioPlaybackService {
         const avgX = col.reduce((s, n) => s + (n.x || 0), 0) / col.length;
         const avgY = col.reduce((s, n) => s + (n.y || 0), 0) / col.length;
         const si = col[0].staffIndex;
+        const voicePositions = col
+          .filter(n => n.type !== 'rest')
+          .map((n) => ({
+            voice: n.voice,
+            x: Number.isFinite(n.x) ? n.x : avgX,
+            y: Number.isFinite(n.y) ? n.y : avgY,
+          }));
 
-        timingMap.push({ time: globalTime, x: avgX, y: avgY, staffIndex: si, systemIndex: col[0].systemIndex ?? 0, isRest: isAllRests });
+        timingMap.push({
+          time: globalTime,
+          x: avgX,
+          y: avgY,
+          voicePositions,
+          staffIndex: si,
+          systemIndex: col[0].systemIndex ?? 0,
+          isRest: isAllRests,
+        });
 
         if (!isAllRests) {
           const noteEntries = realNotes.map(n => ({

@@ -125,13 +125,17 @@ export class MusicXMLParser {
       let divisions = 1; // divisions per quarter note
       let currentKey = { fifths: 0 };
       let currentTime = { beats: 4, beatType: 4 };
+      let hasExplicitTimeSignature = false;
+      let partTimeSignatureForMetadata = null;
       let currentClefs = {};
       let stavesInPart = 1;
       let measureIndex = -1;
+      const trimmedMeasures = [];
       globalBeatOffset = 0;
 
       for (const measureXml of measures) {
         measureIndex++;
+        const measureNumber = measureXml.match(/<measure\b[^>]*\bnumber="([^"]+)"/)?.[1] || String(measureIndex + 1);
 
         // Check for new system
         if (measureIndex > 0 &&
@@ -158,6 +162,7 @@ export class MusicXMLParser {
             const beats = parseInt(timeM[1].match(/<beats>(\d+)<\/beats>/)?.[1] || '4');
             const beatType = parseInt(timeM[1].match(/<beat-type>(\d+)<\/beat-type>/)?.[1] || '4');
             currentTime = { beats, beatType };
+            hasExplicitTimeSignature = true;
           }
 
           const stavesM = attr.match(/<staves>(\d+)<\/staves>/);
@@ -218,10 +223,28 @@ export class MusicXMLParser {
           if (tag === 'forward') {
             const durDivs = parseInt(content.match(/<duration>(\d+)<\/duration>/)?.[1] || '0');
             const beats = durDivs / divisions;
+
+            const forwardStaff = parseInt(content.match(/<staff>(\d+)<\/staff>/)?.[1] || '0');
+            const forwardVoice = parseInt(content.match(/<voice>(\d+)<\/voice>/)?.[1] || '0');
+            const hasForwardContext = Number.isFinite(forwardStaff) && forwardStaff > 0 &&
+              Number.isFinite(forwardVoice) && forwardVoice > 0;
+
+            let targetVoiceKey = null;
+            if (hasForwardContext) {
+              targetVoiceKey = getVoiceKey(forwardStaff, forwardVoice);
+            } else if (activeVoiceKey && voiceBeatPos.has(activeVoiceKey)) {
+              targetVoiceKey = activeVoiceKey;
+            }
+
             linearBeatPos += beats;
-            // Update active voice if set
-            if (activeVoiceKey && voiceBeatPos.has(activeVoiceKey)) {
-              voiceBeatPos.set(activeVoiceKey, voiceBeatPos.get(activeVoiceKey) + beats);
+
+            // Apply forward movement to the targeted voice timeline when known.
+            if (targetVoiceKey) {
+              const basePos = voiceBeatPos.has(targetVoiceKey)
+                ? voiceBeatPos.get(targetVoiceKey)
+                : Math.max(0, linearBeatPos - beats);
+              voiceBeatPos.set(targetVoiceKey, basePos + beats);
+              activeVoiceKey = targetVoiceKey;
             }
             continue;
           }
@@ -230,6 +253,7 @@ export class MusicXMLParser {
           const noteXml = content;
           const isChord = /<chord\s*\/>/.test(noteXml);
           const isRest = /<rest\s*\/>/.test(noteXml) || /<rest>/.test(noteXml);
+          const xmlId = noteXml.match(/\b(?:xml:id|id)="([^"]+)"/i)?.[1] || null;
 
           // Duration in divisions → quarter-note beats
           const durationDivs = parseInt(noteXml.match(/<duration>(\d+)<\/duration>/)?.[1] || String(divisions));
@@ -283,13 +307,14 @@ export class MusicXMLParser {
           }
 
           // Ties
-          const tieStart = /<tie\s+type="start"\s*\/>/.test(noteXml);
-          const tieStop = /<tie\s+type="stop"\s*\/>/.test(noteXml);
+          const tieStart = /<(?:tie|tied)\b[^>]*\btype="start"[^>]*\/?\s*>/.test(noteXml);
+          const tieStop = /<(?:tie|tied)\b[^>]*\btype="stop"[^>]*\/?\s*>/.test(noteXml);
 
           if (isRest) {
             measureHasRest = true;
             notes.push({
               type: 'rest',
+              xmlId,
               pitch: null,
               midiNote: null,
               duration: fullDurName,
@@ -324,6 +349,7 @@ export class MusicXMLParser {
 
               notes.push({
                 type: 'note',
+                xmlId,
                 pitch: pitchName,
                 midiNote,
                 duration: fullDurName,
@@ -359,29 +385,82 @@ export class MusicXMLParser {
         const maxVoicePos = voiceBeatPos.size > 0
           ? Math.max(...voiceBeatPos.values())
           : 0;
+        const looksOverPadded =
+          !measureHasRest &&
+          maxVoicePos > 0 &&
+          theoreticalBeats > (maxVoicePos * 1.5) &&
+          (theoreticalBeats - maxVoicePos) >= 1;
         let measureBeats;
         if (measureIndex === 0 && maxVoicePos > 0 && maxVoicePos < theoreticalBeats) {
           // Pickup measure — use actual content duration
           measureBeats = maxVoicePos;
-        } else if (
-          !measureHasRest &&
-          maxVoicePos > 0 &&
-          theoreticalBeats > (maxVoicePos * 1.5) &&
-          (theoreticalBeats - maxVoicePos) >= 1
-        ) {
-          // OMR can emit over-large time signatures (e.g. 8 BPM with oversized bars)
-          // while note durations are much shorter. If there are no explicit rests,
-          // treat this as timing over-padding and use actual content span.
+        } else if (looksOverPadded) {
+          // OMR can emit over-large meter relative to measured note spans.
+          // If there are no explicit rests and the gap is significant,
+          // use actual content span to avoid long playback silences.
           measureBeats = maxVoicePos;
-          console.warn(
-            `⏱️ Trimmed padded measure ${measureIndex + 1}: ` +
-            `theoretical=${theoreticalBeats.toFixed(2)} beats, content=${maxVoicePos.toFixed(2)} beats`
-          );
+          trimmedMeasures.push({
+            measureNumber,
+            theoreticalBeats,
+            contentBeats: maxVoicePos,
+            explicitTime: hasExplicitTimeSignature,
+          });
         } else {
           // Normal measure — use theoretical, or actual if content overflows
           measureBeats = Math.max(theoreticalBeats, maxVoicePos);
         }
         globalBeatOffset += measureBeats;
+      }
+
+      if (trimmedMeasures.length > 0) {
+        if (trimmedMeasures.length <= 4) {
+          for (const tm of trimmedMeasures) {
+            console.warn(
+              `⏱️ Trimmed padded measure ${tm.measureNumber} (part ${partId}${tm.explicitTime ? ', explicit-time' : ''}): ` +
+              `theoretical=${tm.theoreticalBeats.toFixed(2)} beats, content=${tm.contentBeats.toFixed(2)} beats`
+            );
+          }
+        } else {
+          const sample = trimmedMeasures
+            .slice(0, 5)
+            .map(tm => `${tm.measureNumber}:${tm.theoreticalBeats.toFixed(2)}→${tm.contentBeats.toFixed(2)}`)
+            .join(', ');
+          console.warn(
+            `⏱️ Trimmed padded measures in part ${partId}${trimmedMeasures[0].explicitTime ? ' (explicit-time)' : ''}: ` +
+            `${trimmedMeasures.length} measures adjusted; sample=${sample}`
+          );
+        }
+      }
+
+      // If explicit time is repeatedly over-padded across most measures,
+      // infer a practical display meter from actual content spans.
+      if (
+        hasExplicitTimeSignature &&
+        (
+          trimmedMeasures.length >= Math.max(4, Math.floor(measures.length * 0.33)) ||
+          (currentTime.beats >= 9 && trimmedMeasures.length >= 2)
+        )
+      ) {
+        const sortedContent = trimmedMeasures
+          .map(tm => tm.contentBeats)
+          .sort((a, b) => a - b);
+        const mid = Math.floor(sortedContent.length / 2);
+        const medianContent = sortedContent.length % 2 === 0
+          ? (sortedContent[mid - 1] + sortedContent[mid]) / 2
+          : sortedContent[mid];
+
+        const inferredQuarterBeats = Math.max(1, Math.round(medianContent * 2) / 2);
+        const isIntegerQuarter = Math.abs(inferredQuarterBeats - Math.round(inferredQuarterBeats)) < 0.001;
+
+        partTimeSignatureForMetadata = isIntegerQuarter
+          ? { beats: Math.round(inferredQuarterBeats), beatType: 4 }
+          : { beats: Math.round(inferredQuarterBeats * 2), beatType: 8 };
+
+        console.warn(
+          `⏱️ Meter override for part ${partId}: exported=${currentTime.beats}/${currentTime.beatType}, ` +
+          `inferred=${partTimeSignatureForMetadata.beats}/${partTimeSignatureForMetadata.beatType} ` +
+          `(trimmed ${trimmedMeasures.length}/${measures.length} measures)`
+        );
       }
 
       // Update global staff offset for next part
@@ -393,7 +472,7 @@ export class MusicXMLParser {
           metadata.clefs.push(clef);
         }
       }
-      metadata.timeSignature = currentTime;
+      metadata.timeSignature = partTimeSignatureForMetadata || currentTime;
       metadata.keySignature = this._fifthsToKey(currentKey.fifths);
     }
 
@@ -659,7 +738,8 @@ export class MusicXMLParser {
    */
   static _resolveTies(notes) {
     const openTies = new Map();
-    const TIE_CONTIGUITY_EPSILON = 0.02;
+    const TIE_CONTIGUITY_EPSILON_MIN = 0.02;
+    const TIE_CONTIGUITY_EPSILON_MAX = 0.12;
 
     for (let i = 0; i < notes.length; i++) {
       const note = notes[i];
@@ -677,7 +757,11 @@ export class MusicXMLParser {
         // This prevents accidental note drops from malformed tie tags.
         const expectedStart = (starter.beatOffset || 0) + startBeats;
         const actualStart = note.beatOffset || 0;
-        const isContiguous = Math.abs(actualStart - expectedStart) <= TIE_CONTIGUITY_EPSILON;
+        const tieEpsilon = Math.max(
+          TIE_CONTIGUITY_EPSILON_MIN,
+          Math.min(TIE_CONTIGUITY_EPSILON_MAX, Math.min(startBeats, addBeats) * 0.35)
+        );
+        const isContiguous = Math.abs(actualStart - expectedStart) <= tieEpsilon;
 
         if (isContiguous) {
           starter.tiedBeats = startBeats + addBeats;

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -19,9 +19,12 @@ import Slider from '@react-native-community/slider';
 import { Feather } from '@expo/vector-icons';
 import { AudioPlaybackService } from '../services/AudioPlaybackService';
 import { PlaybackVisualization } from '../components/PlaybackVisualization';
+import { RenderedScoreView } from '../components/RenderedScoreView';
+import { VerovioScoreView } from '../components/VerovioScoreView';
 import { ScoreInfoPanel } from '../components/ScoreInfoPanel';
 import { OMRSettings } from '../services/OMRSettings';
 import { OMRCacheService } from '../services/OMRCacheService';
+import { CanonicalTimeline } from '../services/CanonicalTimeline';
 
 /* ─── Theme ─── */
 const palette = {
@@ -44,6 +47,12 @@ const barPalette = {
 
 // Temporary debug switch: disable pitch panel to isolate playback behavior.
 const ENABLE_PITCH_VIEW = false;
+const AUDIO_TIMELINE_MODE = 'compressed'; // 'canonical' | 'compressed'
+const RENDERED_PLAYHEAD_MODES = ['line', 'notes', 'both'];
+const RENDERED_HIGHLIGHT_COLORS = ['#E05A2A', '#F08A45', '#C94B1A', '#FFB36A'];
+const RENDER_VIEW_PRESETS = ['smart', 'fit'];
+const CLEF_FILTERS = ['both', 'upper', 'lower'];
+const RENDER_ENGINES = ['osmd', 'verovio'];
 
 const DURATION_TO_BEATS = {
   whole: 4,
@@ -173,6 +182,115 @@ function buildPitchTimelineFromRawEvents(noteEvents, tempoBpm) {
     .sort((a, b) => a.time - b.time);
 }
 
+function buildMusicXmlHighlightTimeline(notes, tempoBpm) {
+  if (!Array.isArray(notes) || !notes.length || !Number.isFinite(tempoBpm) || tempoBpm <= 0) {
+    return [];
+  }
+
+  const spb = 60 / tempoBpm;
+  const timeline = notes
+    .filter((note) => note && note.type === 'note' && Number.isFinite(note.beatOffset))
+    .map((note, index) => {
+      const durationBeats = Number.isFinite(note.tiedBeats)
+        ? note.tiedBeats
+        : Number.isFinite(note.durationBeats)
+          ? note.durationBeats
+          : (DURATION_TO_BEATS[note.duration] || 1);
+      const timeSeconds = note.beatOffset * spb;
+      const durationSeconds = Math.max(0, durationBeats * spb);
+      const elementId = note.xmlId || note.noteId || note.id || null;
+      return {
+        index,
+        timeSeconds,
+        durationSeconds,
+        endTimeSeconds: timeSeconds + durationSeconds,
+        elementId,
+        voice: note.voice || '',
+        staffIndex: Number.isFinite(note.staffIndex) ? note.staffIndex : null,
+        systemIndex: Number.isFinite(note.systemIndex) ? note.systemIndex : null,
+        beatOffset: note.beatOffset,
+      };
+    })
+    .sort((a, b) => a.timeSeconds - b.timeSeconds || a.systemIndex - b.systemIndex || a.staffIndex - b.staffIndex || a.index - b.index);
+  return timeline;
+}
+
+function buildHighlightTimelineFromPreparedEvents(noteEvents, tempoBpm) {
+  if (!Array.isArray(noteEvents) || !noteEvents.length || !Number.isFinite(tempoBpm) || tempoBpm <= 0) {
+    return [];
+  }
+
+  const spb = 60 / tempoBpm;
+  return noteEvents
+    .filter((event) => Number.isFinite(event.beatOffset) && Number.isFinite(event.durationBeats))
+    .map((event, index) => {
+      const timeSeconds = event.beatOffset * spb;
+      const durationSeconds = Math.max(0, event.durationBeats * spb);
+      return {
+        index,
+        timeSeconds,
+        durationSeconds,
+        endTimeSeconds: timeSeconds + durationSeconds,
+        elementId: event.xmlId || null,
+        voice: event.voice || '',
+        staffIndex: Number.isFinite(event.staffIndex) ? event.staffIndex : null,
+        systemIndex: Number.isFinite(event.systemIndex) ? event.systemIndex : null,
+        beatOffset: event.beatOffset,
+      };
+    })
+    .sort((a, b) => a.timeSeconds - b.timeSeconds || a.systemIndex - b.systemIndex || a.staffIndex - b.staffIndex || a.index - b.index);
+}
+
+function normalizeVoiceLabel(voice) {
+  const raw = String(voice || '').trim().toLowerCase();
+  if (!raw) return '';
+  if (raw === 's' || raw === 'soprano' || raw.includes('soprano')) return 'Soprano';
+  if (raw === 'a' || raw === 'alto' || raw.includes('alto')) return 'Alto';
+  if (raw === 't' || raw === 'tenor' || raw.includes('tenor')) return 'Tenor';
+  if (raw === 'b' || raw === 'bass' || raw.includes('bass')) return 'Bass';
+  return '';
+}
+
+function isVoiceAllowed(voiceSelection, entryVoice) {
+  if (!voiceSelection || Object.values(voiceSelection).every(Boolean)) return true;
+  const canonical = normalizeVoiceLabel(entryVoice);
+  if (canonical && Object.prototype.hasOwnProperty.call(voiceSelection, canonical)) {
+    return !!voiceSelection[canonical];
+  }
+  return true;
+}
+
+function getActiveHighlightIds(timeline, currentTimeSeconds, voiceSelection) {
+  if (!Array.isArray(timeline) || !timeline.length || !Number.isFinite(currentTimeSeconds)) {
+    return [];
+  }
+
+  const eligible = timeline.filter((entry) => {
+    if (!entry || !entry.elementId) return false;
+    if (!isVoiceAllowed(voiceSelection, entry.voice)) return false;
+    return currentTimeSeconds >= entry.timeSeconds;
+  });
+
+  if (!eligible.length) {
+    const firstOnset = timeline.find((entry) => entry && entry.elementId && isVoiceAllowed(voiceSelection, entry.voice));
+    return firstOnset?.elementId ? [firstOnset.elementId] : [];
+  }
+
+  let latestTime = -Infinity;
+  for (const entry of eligible) {
+    if (entry.timeSeconds > latestTime) latestTime = entry.timeSeconds;
+  }
+
+  const EPSILON = 0.001;
+  const active = [];
+  for (const entry of eligible) {
+    if (Math.abs(entry.timeSeconds - latestTime) <= EPSILON && entry.elementId) {
+      active.push(entry.elementId);
+    }
+  }
+  return active;
+}
+
 function getLiteralPlaybackNotes(scoreData) {
   return scoreData?.notes || [];
 }
@@ -201,8 +319,14 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
   const [showInstrumentPicker, setShowInstrumentPicker] = useState(false);
 
   // Cursor data
-  const [cursorInfo, setCursorInfo] = useState(null);
   const [pitchTimeline, setPitchTimeline] = useState([]);
+  const [scoreViewMode, setScoreViewMode] = useState('rendered');
+  const [renderedPlayheadMode, setRenderedPlayheadMode] = useState('notes');
+  const [renderedHighlightColorIdx, setRenderedHighlightColorIdx] = useState(0);
+  const [renderViewPreset, setRenderViewPreset] = useState('fit');
+  const [renderEngine, setRenderEngine] = useState(OMRSettings.getDefaultRenderer());
+  const [preparedPlaybackEvents, setPreparedPlaybackEvents] = useState([]);
+  const [clefFilter, setClefFilter] = useState('both');
 
   const audioFileUriRef = useRef(null);
   const prepareIdRef = useRef(0);
@@ -210,6 +334,8 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
   const webAudioReadyRef = useRef(false);
   const mixDebounceRef = useRef(null);
   const rawNoteEventsRef = useRef([]);
+  const renderedScoreRef = useRef(null);
+  const lastPlaybackUiUpdateRef = useRef(0);
 
   const [voiceSelection, setVoiceSelection] = useState({
     Soprano: true,
@@ -217,6 +343,27 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
     Tenor: true,
     Bass: true,
   });
+
+  const effectiveVoiceSelection = useMemo(() => {
+    if (clefFilter === 'upper') {
+      return { Soprano: true, Alto: true, Tenor: false, Bass: false };
+    }
+    if (clefFilter === 'lower') {
+      return { Soprano: false, Alto: false, Tenor: true, Bass: true };
+    }
+    return voiceSelection;
+  }, [voiceSelection, clefFilter]);
+
+  useEffect(() => {
+    let cancelled = false;
+    OMRSettings.load().then(() => {
+      if (cancelled) return;
+      setRenderEngine(OMRSettings.getDefaultRenderer());
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   /* ── Process score via selected OMR engine (with caching) ── */
   const processScore = useCallback(async () => {
@@ -230,12 +377,10 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
     const selectedEngine = OMRSettings.getEngine();
 
     const ENGINE_LABELS = {
-      audiveris: 'Audiveris',
-      zemsky: 'Zemsky Emulator',
+      zemsky: 'ZemEmu',
     };
 
     const ENGINE_TIMEOUTS = {
-      audiveris: 360000,
       zemsky: 180000,
     };
 
@@ -245,8 +390,6 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
 
       if (isFallback) {
         setProcessingStage(`Primary engine failed. Trying ${engineName}...`);
-      } else if (engineKey === 'audiveris') {
-        setProcessingStage(`Connecting to ${engineName} server...`);
       } else {
         setProcessingStage(`Starting ${engineName} analysis...`);
       }
@@ -332,6 +475,16 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
     });
   }, [processScore]);
 
+  useEffect(() => {
+    if (scoreViewMode !== 'rendered') return;
+    renderedScoreRef.current?.resetPlayback?.();
+  }, [scoreViewMode]);
+
+  useEffect(() => {
+    if (scoreViewMode !== 'rendered') return;
+    renderedScoreRef.current?.setVoiceSelection?.(effectiveVoiceSelection);
+  }, [scoreViewMode, effectiveVoiceSelection]);
+
   /* ── Phase 1: Prepare note events when scoreData or instrument changes ── */
   /* Parse notes once, build event list. No audio rendering here — just data.  */
   useEffect(() => {
@@ -356,8 +509,11 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
         const playbackNotes = getLiteralPlaybackNotes(scoreData);
 
         // Prepare playback note events through the service path.
-        const evtResult = AudioPlaybackService.prepareNoteEvents(playbackNotes);
-        rawNoteEventsRef.current = [];
+        const evtResult = AudioPlaybackService.prepareNoteEvents(playbackNotes, {
+          timelineMode: AUDIO_TIMELINE_MODE,
+        });
+        rawNoteEventsRef.current = Array.isArray(evtResult?.noteEvents) ? evtResult.noteEvents : [];
+        setPreparedPlaybackEvents(rawNoteEventsRef.current);
         const canUseWebAudio = AudioPlaybackService.isWebAudioAvailable() && !!evtResult;
         if (cancelled || myId !== prepareIdRef.current) return;
 
@@ -371,14 +527,12 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
           // Web Audio path: note events prepared, build timing map
           AudioPlaybackService._useWebAudio = true;
           webAudioReadyRef.current = true;
-          const timingMap = AudioPlaybackService.buildTimingMap(tempo);
           const dur = evtResult.totalBeats * (60 / tempo);
           setTotalDuration(dur);
           setPlaybackTime(0);
-          buildCursorInfo(timingMap);
           console.log(`✅ Web Audio ready [${myId}]: ${dur.toFixed(1)}s, ${evtResult.noteEvents.length} events`);
         } else {
-          // Legacy path: no beatOffset data, use expo-av
+          // Clean pipeline only: beatOffset-based pre-render must be available.
           webAudioReadyRef.current = false;
           AudioPlaybackService._useWebAudio = false;
           const result = await AudioPlaybackService.preRenderVoiceTracks(playbackNotes, tempo);
@@ -386,7 +540,7 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
           if (result) {
             await doMix(myId);
           } else {
-            await legacyPrepare(myId);
+            throw new Error('Clean pipeline requires beatOffset timing data; legacy prepare fallback is disabled.');
           }
         }
       } catch (e) {
@@ -413,7 +567,7 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
       // Web Audio path: voice selection is applied at play time, nothing to do
       // If currently playing, reschedule with new voice selection
       if (AudioPlaybackService.isPlaying) {
-        AudioPlaybackService.changeTempo(tempo, voiceSelection);
+        AudioPlaybackService.changeTempo(tempo, effectiveVoiceSelection);
       }
       return;
     }
@@ -435,20 +589,20 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
     return () => {
       if (mixDebounceRef.current) clearTimeout(mixDebounceRef.current);
     };
-  }, [voiceSelection]);
+  }, [effectiveVoiceSelection]);
 
-  /** Mix pre-rendered voice buffers into a single WAV based on current voiceSelection */
+  /** Mix pre-rendered voice buffers into a single WAV based on effective voice selection */
   const doMix = async (myId) => {
     audioFileUriRef.current = null;
     setPreparing(true);
     try {
       // Check at least one voice has notes
-      const activeVoices = Object.entries(voiceSelection)
+      const activeVoices = Object.entries(effectiveVoiceSelection)
         .filter(([, v]) => v).map(([k]) => k);
       console.log(`🎵 mix [${myId}]: voices=${activeVoices.join(',')}`);
 
       const { fileUri, timingMap, totalDuration: dur } =
-        await AudioPlaybackService.mixVoiceTracks(voiceSelection);
+        await AudioPlaybackService.mixVoiceTracks(effectiveVoiceSelection);
 
       if (myId !== prepareIdRef.current) {
         console.log(`🎵 mix [${myId}]: stale, abandoning`);
@@ -458,7 +612,6 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
       if (!fileUri || !timingMap.length || dur <= 0) {
         Alert.alert('No playable notes', 'No notes detected for playback.');
         audioFileUriRef.current = null;
-        setCursorInfo(null);
         setTotalDuration(0);
         setPreparing(false);
         return;
@@ -467,7 +620,6 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
       audioFileUriRef.current = fileUri;
       setTotalDuration(dur);
       setPlaybackTime(0);
-      buildCursorInfo(timingMap);
 
       console.log(`✅ Audio ready [${myId}]: ${dur.toFixed(1)}s, file=${fileUri ? 'OK' : 'MISSING'}`);
     } catch (e) {
@@ -493,10 +645,9 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
 
     if (webAudioReadyRef.current) {
       // Web Audio path: instant tempo change (just reschedule events)
-      const result = AudioPlaybackService.changeTempo(newTempo, voiceSelection);
+      const result = AudioPlaybackService.changeTempo(newTempo, effectiveVoiceSelection);
       if (result) {
         setTotalDuration(result.totalDuration);
-        buildCursorInfo(result.timingMap);
         setPitchTimeline(
           ENABLE_PITCH_VIEW
             ? buildPitchTimelineFromRawEvents(rawNoteEventsRef.current, newTempo)
@@ -508,7 +659,7 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
       return;
     }
 
-    // Legacy path: full re-render
+    // Non-WebAudio path: regenerate pre-rendered audio at the new tempo.
     const myId = ++prepareIdRef.current;
     await AudioPlaybackService.stop();
     setIsPlaying(false);
@@ -525,8 +676,7 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
       const result = await AudioPlaybackService.preRenderVoiceTracks(playbackNotes, newTempo);
       if (myId !== prepareIdRef.current) return;
       if (!result) {
-        await legacyPrepare(myId);
-        return;
+        throw new Error('Clean pipeline requires beatOffset timing data; legacy tempo fallback is disabled.');
       }
       await doMix(myId);
       console.log(`✅ Tempo re-render: ${newTempo} BPM`);
@@ -536,123 +686,12 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
     }
   };
 
-  /** Legacy path: full re-render when beatOffset is unavailable */
-  const legacyPrepare = async (myId) => {
-    audioFileUriRef.current = null;
-    setPreparing(true);
-    try {
-      const playbackNotes = getLiteralPlaybackNotes(scoreData);
-      const filteredNotes = playbackNotes.filter(
-        (n) => n.type === 'rest' || voiceSelection[n.voice]
-      );
-      const playableCount = filteredNotes.filter((n) => n.type !== 'rest').length;
-      if (playableCount === 0) {
-        Alert.alert('No Notes', 'No notes found for the selected voice(s)');
-        setPreparing(false);
-        return;
-      }
-
-      const systemsMetadata = scoreData.metadata?.systems || null;
-      const { fileUri, timingMap, totalDuration: dur } =
-        await AudioPlaybackService.createCombinedAudio(filteredNotes, tempo, systemsMetadata);
-
-      if (myId !== prepareIdRef.current) return;
-
-      if (!fileUri || !timingMap.length || dur <= 0) {
-        Alert.alert('No playable notes', 'No notes detected for playback.');
-        setPreparing(false);
-        return;
-      }
-
-      audioFileUriRef.current = fileUri;
-      setTotalDuration(dur);
-      setPlaybackTime(0);
-      buildCursorInfo(timingMap);
-
-      console.log(`✅ Audio ready (legacy) [${myId}]: ${dur.toFixed(1)}s`);
-    } catch (e) {
-      console.error(`legacyPrepare [${myId}] error:`, e);
-      if (myId === prepareIdRef.current) {
-        Alert.alert('Error', 'Failed to prepare audio: ' + e.message);
-      }
-    } finally {
-      if (myId === prepareIdRef.current) {
-        setPreparing(false);
-      }
-    }
-  };
-
-  /** Build cursor positioning data from a timing map */
-  const buildCursorInfo = (timingMap) => {
-    const imgW = scoreData.metadata?.imageWidth || 1;
-    const imgH = scoreData.metadata?.imageHeight || 1;
-    const metaSystems = scoreData.metadata?.systems || [];
-    const staffGroups = scoreData.metadata?.staffGroups || [];
-
-    let systemBounds;
-    if (metaSystems.length > 0) {
-      systemBounds = metaSystems.map((sys) => ({
-        top: sys.top, bottom: sys.bottom, staffIndices: sys.staffIndices,
-      }));
-    } else {
-      systemBounds = [];
-      let si = 0;
-      while (si < staffGroups.length) {
-        const a = staffGroups[si];
-        const b = staffGroups[si + 1];
-        const topA = Math.min(...a);
-        const botA = Math.max(...a);
-        if (b) {
-          const topB = Math.min(...b);
-          const botB = Math.max(...b);
-          if (topB - botA < (botA - topA) * 2.5) {
-            systemBounds.push({ top: topA, bottom: botB, staffIndices: [si, si + 1] });
-            si += 2;
-            continue;
-          }
-        }
-        systemBounds.push({ top: topA, bottom: botA, staffIndices: [si] });
-        si += 1;
-      }
-    }
-
-    // Group timing entries by system so x-ratio is computed per-system
-    const bySystem = new Map();
-    for (const entry of timingMap) {
-      const sysIdx = entry.systemIndex ?? 0;
-      if (!bySystem.has(sysIdx)) bySystem.set(sysIdx, []);
-      bySystem.get(sysIdx).push(entry);
-    }
-
-    // Compute per-system x ranges
-    const systemXRanges = {};
-    for (const [sysIdx, entries] of bySystem) {
-      const xs = entries.map(e => e.x);
-      const mn = Math.min(...xs);
-      const mx = Math.max(...xs);
-      systemXRanges[sysIdx] = { min: mn, max: mx, range: Math.max(1, mx - mn) };
-    }
-
-    const positions = timingMap.map((entry) => {
-      const sysIdx = entry.systemIndex ?? 0;
-      const sysR = systemXRanges[sysIdx];
-      const ratio = (entry.x - sysR.min) / sysR.range;
-      return { time: entry.time, ratio: Math.max(0, Math.min(1, ratio)), systemIndex: sysIdx, y: entry.y, voicePositions: entry.voicePositions || [] };
-    });
-
-    setCursorInfo({
-      positions, systemBounds,
-      imageWidth: imgW, imageHeight: imgH,
-      systemXRanges,
-    });
-  };
-
   /* ── Playback controls ── */
   const handlePlay = async () => {
     if (preparing) return;
 
     if (isPaused) {
-      await AudioPlaybackService.resume(voiceSelection);
+      await AudioPlaybackService.resume(effectiveVoiceSelection);
       setIsPlaying(true);
       setIsPaused(false);
       return;
@@ -661,24 +700,26 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
     setIsPlaying(true);
     setIsPaused(false);
     setPlaybackTime(0);
+    lastPlaybackUiUpdateRef.current = 0;
+    renderedScoreRef.current?.resetPlayback?.();
 
     if (webAudioReadyRef.current) {
       // Web Audio path: schedule all notes, no file needed
       console.log(`▶️ handlePlay: Web Audio at ${tempo} BPM`);
-      AudioPlaybackService._onPositionUpdate = (timeSec) => setPlaybackTime(timeSec);
+      AudioPlaybackService._onPositionUpdate = (timeSec) => updatePlaybackPosition(timeSec);
       AudioPlaybackService._onFinished = () => {
         setIsPlaying(false);
         setIsPaused(false);
-        setPlaybackTime(totalDuration);
+        updatePlaybackPosition(totalDuration, true);
       };
-      AudioPlaybackService.playWebAudio(tempo, voiceSelection,
-        (timeSec) => setPlaybackTime(timeSec),
-        () => { setIsPlaying(false); setIsPaused(false); setPlaybackTime(totalDuration); }
+      AudioPlaybackService.playWebAudio(tempo, effectiveVoiceSelection,
+        (timeSec) => updatePlaybackPosition(timeSec),
+        () => { setIsPlaying(false); setIsPaused(false); updatePlaybackPosition(totalDuration, true); }
       );
       return;
     }
 
-    // Legacy path: expo-av file playback
+    // Non-WebAudio transport path: play pre-rendered file via expo-av
     if (!audioFileUriRef.current) {
       console.warn('handlePlay: audioFileUriRef is null');
       Alert.alert('Not Ready', 'Audio is still preparing. Please wait.');
@@ -690,8 +731,8 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
     try {
       await AudioPlaybackService.play(
         fileUri,
-        (timeSec) => setPlaybackTime(timeSec),
-        () => { setIsPlaying(false); setIsPaused(false); setPlaybackTime(totalDuration); }
+        (timeSec) => updatePlaybackPosition(timeSec),
+        () => { setIsPlaying(false); setIsPaused(false); updatePlaybackPosition(totalDuration, true); }
       );
     } catch (e) {
       console.error('Play error:', e);
@@ -710,12 +751,19 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
     setIsPlaying(false);
     setIsPaused(false);
     setPlaybackTime(0);
+    renderedScoreRef.current?.resetPlayback?.();
   };
 
   const handleSeek = async (timeSec) => {
     const clamped = Math.max(0, Math.min(timeSec, totalDuration));
     setPlaybackTime(clamped);
-    await AudioPlaybackService.seekTo(clamped, voiceSelection);
+    if (canonicalTimeline && Number.isFinite(canonicalTimeline.totalBeats) && canonicalTimeline.totalBeats > 0) {
+      const beat = canonicalTimeline.timeToBeat(clamped, tempo);
+      renderedScoreRef.current?.syncBeat?.(beat, canonicalTimeline.totalBeats);
+    } else {
+      renderedScoreRef.current?.syncPlayback?.(clamped, totalDuration);
+    }
+    await AudioPlaybackService.seekTo(clamped, effectiveVoiceSelection);
   };
 
   const toggleVoice = (voice) => {
@@ -819,9 +867,63 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
   };
 
   const currentInstrumentName = availablePresets[selectedPresetIndex]?.name || 'Piano';
+  const canonicalTimeline = useMemo(() => {
+    if (!scoreData) return null;
+    return new CanonicalTimeline(scoreData);
+  }, [scoreData]);
+  const musicXmlHighlightTimeline = useMemo(() => {
+    if (preparedPlaybackEvents.length > 0) {
+      return buildHighlightTimelineFromPreparedEvents(preparedPlaybackEvents, tempo);
+    }
+    if (!scoreData) return [];
+    return buildMusicXmlHighlightTimeline(scoreData.notes, tempo);
+  }, [preparedPlaybackEvents, scoreData, tempo]);
+  const canonicalTotalDuration = useMemo(() => {
+    if (!canonicalTimeline) return 0;
+    return canonicalTimeline.totalDurationSeconds(tempo);
+  }, [canonicalTimeline, tempo]);
+  const canonicalTotalBeats = useMemo(() => {
+    if (!canonicalTimeline) return 0;
+    return Number.isFinite(canonicalTimeline.totalBeats) ? canonicalTimeline.totalBeats : 0;
+  }, [canonicalTimeline]);
 
-  // Compute current beat position from playback time + tempo
-  const currentBeat = totalDuration > 0 ? (playbackTime / (60 / tempo)) : 0;
+  const updatePlaybackPosition = useCallback((timeSec, force = false) => {
+    const clamped = Math.max(0, Math.min(timeSec, totalDuration || timeSec || 0));
+    const renderedTotal = canonicalTotalDuration > 0 ? canonicalTotalDuration : totalDuration;
+    const canonicalBeatForRender = canonicalTimeline
+      ? canonicalTimeline.timeToBeat(clamped, tempo)
+      : 0;
+    const onsetProgress = canonicalTotalBeats > 0
+      ? Math.max(0, Math.min(1, canonicalBeatForRender / canonicalTotalBeats))
+      : NaN;
+    const activeHighlightIds = getActiveHighlightIds(musicXmlHighlightTimeline, clamped, effectiveVoiceSelection);
+
+    if (renderedScoreRef.current?.syncActiveNoteIds) {
+      renderedScoreRef.current.syncActiveNoteIds(activeHighlightIds, clamped);
+    }
+
+    if (renderedScoreRef.current?.syncBeat && canonicalTotalBeats > 0) {
+      renderedScoreRef.current.syncBeat(canonicalBeatForRender, canonicalTotalBeats);
+    } else if (renderedScoreRef.current?.syncPlayback && renderedTotal > 0) {
+      renderedScoreRef.current.syncPlayback(clamped, renderedTotal);
+    }
+
+    const now = Date.now();
+    if (force || now - lastPlaybackUiUpdateRef.current >= 50) {
+      lastPlaybackUiUpdateRef.current = now;
+      setPlaybackTime(clamped);
+    }
+  }, [totalDuration, canonicalTotalDuration, canonicalTimeline, tempo, canonicalTotalBeats, musicXmlHighlightTimeline, effectiveVoiceSelection]);
+
+  // Compute current beat from canonical MusicXML timeline for UI components.
+  const currentBeat = canonicalTimeline
+    ? canonicalTimeline.timeToBeat(playbackTime, tempo)
+    : (totalDuration > 0 ? (playbackTime / (60 / tempo)) : 0);
+  
+  // Prefer canonical progress when available; otherwise fall back to audio duration.
+  const renderProgress = canonicalTimeline
+    ? canonicalTimeline.progressFromTime(playbackTime, tempo)
+    : (totalDuration > 0 ? Math.min(1, playbackTime / totalDuration) : 0);
 
   /* ── Render ── */
   if (processing) {
@@ -871,21 +973,60 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
         <View style={{ width: 60 }} />
       </View>
 
-      {/* Score + cursor */}
+      {/* Score view */}
       <View style={styles.viewerArea}>
-        <PlaybackVisualization
-          imageUri={scoreData?.processedImageUri || imageUri}
-          currentTime={playbackTime}
-          totalDuration={totalDuration}
-          isPlaying={isPlaying}
-          cursorInfo={cursorInfo}
-          onSeek={handleSeek}
-          measureBeats={scoreData.metadata?.measureBeats}
-          tempo={tempo}
-          pitchTimeline={ENABLE_PITCH_VIEW ? pitchTimeline : []}
-          voiceSelection={voiceSelection}
-          debugNotes={scoreData?.notes}
-        />
+        {scoreViewMode === 'rendered' ? (
+          renderEngine === 'verovio' ? (
+            <VerovioScoreView
+              ref={renderedScoreRef}
+              musicXml={scoreData?.musicXml || ''}
+              currentBeat={renderProgress}
+              playheadMode={renderedPlayheadMode}
+              playheadColor={RENDERED_HIGHLIGHT_COLORS[renderedHighlightColorIdx]}
+              renderViewPreset={renderViewPreset}
+              onPlayheadModeChange={setRenderedPlayheadMode}
+              onRenderViewPresetChange={setRenderViewPreset}
+              onPlayheadColorChange={(color) => {
+                const idx = RENDERED_HIGHLIGHT_COLORS.indexOf(color);
+                if (idx >= 0) {
+                  setRenderedHighlightColorIdx(idx);
+                }
+              }}
+            />
+          ) : (
+            <RenderedScoreView
+              ref={renderedScoreRef}
+              musicXml={scoreData?.musicXml || ''}
+              currentBeat={renderProgress}
+              playheadMode={renderedPlayheadMode}
+              playheadColor={RENDERED_HIGHLIGHT_COLORS[renderedHighlightColorIdx]}
+              renderViewPreset={renderViewPreset}
+              onPlayheadModeChange={setRenderedPlayheadMode}
+              onRenderViewPresetChange={setRenderViewPreset}
+              onPlayheadColorChange={(color) => {
+                const idx = RENDERED_HIGHLIGHT_COLORS.indexOf(color);
+                if (idx >= 0) {
+                  setRenderedHighlightColorIdx(idx);
+                }
+              }}
+            />
+          )
+        ) : (
+          <PlaybackVisualization
+            imageUri={scoreData?.processedImageUri || imageUri}
+            currentTime={playbackTime}
+            totalDuration={totalDuration}
+            isPlaying={isPlaying}
+            cursorInfo={null}
+            onSeek={handleSeek}
+            measureBeats={scoreData?.metadata?.measureBeats}
+            tempo={tempo}
+            pitchTimeline={ENABLE_PITCH_VIEW ? pitchTimeline : []}
+            voiceSelection={voiceSelection}
+            debugNotes={scoreData?.notes}
+            timelineMode={AUDIO_TIMELINE_MODE}
+          />
+        )}
       </View>
 
       {/* Tempo slider drawer */}
@@ -994,23 +1135,111 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
             <Text style={styles.pillText}>Export XML</Text>
           </Pressable>
 
+          {scoreViewMode === 'rendered' && (
+            <Pressable
+              style={({ pressed }) => [
+                styles.zoomPill,
+                pressed && styles.pressedPill,
+                renderEngine === 'verovio' && { borderColor: barPalette.accent },
+              ]}
+              onPress={() => {
+                setRenderEngine((engine) => {
+                  const idx = RENDER_ENGINES.indexOf(engine);
+                  return RENDER_ENGINES[(idx + 1) % RENDER_ENGINES.length];
+                });
+                renderedScoreRef.current?.resetPlayback?.();
+              }}
+            >
+              <Feather
+                name={renderEngine === 'verovio' ? 'book-open' : 'file-text'}
+                size={12}
+                color={barPalette.barTextMuted}
+              />
+              <Text style={styles.pillText}>Renderer {renderEngine === 'verovio' ? 'Verovio' : 'OSMD'}</Text>
+            </Pressable>
+          )}
+
+          {scoreViewMode === 'rendered' && (
+            <Pressable
+              style={({ pressed }) => [
+                styles.zoomPill,
+                pressed && styles.pressedPill,
+                renderedPlayheadMode !== 'notes' && { borderColor: barPalette.accent },
+              ]}
+              onPress={() => setRenderedPlayheadMode((mode) => {
+                const idx = RENDERED_PLAYHEAD_MODES.indexOf(mode);
+                return RENDERED_PLAYHEAD_MODES[(idx + 1) % RENDERED_PLAYHEAD_MODES.length];
+              })}
+            >
+              <Feather
+                name={renderedPlayheadMode === 'line' ? 'minus' : renderedPlayheadMode === 'both' ? 'crosshair' : 'disc'}
+                size={12}
+                color={barPalette.barTextMuted}
+              />
+              <Text style={styles.pillText}>Playhead {renderedPlayheadMode}</Text>
+            </Pressable>
+          )}
+
+          {/* Clef filter */}
+          <Pressable
+            style={({ pressed }) => [
+              styles.zoomPill,
+              pressed && styles.pressedPill,
+              clefFilter !== 'both' && { borderColor: barPalette.accent },
+            ]}
+            onPress={() => setClefFilter((mode) => {
+              const idx = CLEF_FILTERS.indexOf(mode);
+              return CLEF_FILTERS[(idx + 1) % CLEF_FILTERS.length];
+            })}
+          >
+            <Feather
+              name={clefFilter === 'upper' ? 'arrow-up' : clefFilter === 'lower' ? 'arrow-down' : 'align-center'}
+              size={12}
+              color={barPalette.barTextMuted}
+            />
+            <Text style={styles.pillText}>
+              {clefFilter === 'upper' ? 'Upper Clef' : clefFilter === 'lower' ? 'Lower Clef' : 'Both Clefs'}
+            </Text>
+          </Pressable>
+
+          {/* Score view mode */}
+          <Pressable
+            style={({ pressed }) => [
+              styles.zoomPill,
+              pressed && styles.pressedPill,
+              scoreViewMode === 'rendered' && { borderColor: barPalette.accent },
+            ]}
+            onPress={() => setScoreViewMode((m) => (m === 'rendered' ? 'scan' : 'rendered'))}
+          >
+            <Feather
+              name={scoreViewMode === 'rendered' ? 'layout' : 'image'}
+              size={12}
+              color={barPalette.barTextMuted}
+            />
+            <Text style={styles.pillText}>
+              {scoreViewMode === 'rendered' ? 'Rendered (Primary)' : 'Scanned (Reference)'}
+            </Text>
+          </Pressable>
+
           {/* Voice toggles: tap = solo, long press = toggle */}
           <View style={styles.voicePill}>
             {/* All button */}
             <Pressable
               style={({ pressed }) => [
                 styles.voiceDot,
-                Object.values(voiceSelection).every(Boolean)
+                Object.values(effectiveVoiceSelection).every(Boolean)
                   ? styles.voiceDotAll
                   : styles.voiceDotInactive,
                 pressed && styles.pressedDot,
+                clefFilter !== 'both' && { opacity: 0.6 },
               ]}
               onPress={allVoicesOn}
+              disabled={clefFilter !== 'both'}
             >
               <Text
                 style={[
                   styles.voiceDotText,
-                  Object.values(voiceSelection).every(Boolean)
+                  Object.values(effectiveVoiceSelection).every(Boolean)
                     ? styles.voiceDotTextActive
                     : styles.voiceDotTextInactive,
                 ]}
@@ -1031,21 +1260,22 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
                   styles.voiceDot,
                   isEmpty
                     ? styles.voiceDotEmpty
-                    : voiceSelection[voice]
+                    : effectiveVoiceSelection[voice]
                       ? styles.voiceDotActive
                       : styles.voiceDotInactive,
                   pressed && !isEmpty && styles.pressedDot,
+                  clefFilter !== 'both' && { opacity: 0.6 },
                 ]}
                 onPress={() => isEmpty ? null : soloVoice(voice)}
                 onLongPress={() => isEmpty ? null : toggleVoice(voice)}
-                disabled={isEmpty}
+                disabled={isEmpty || clefFilter !== 'both'}
               >
                 <Text
                   style={[
                     styles.voiceDotText,
                     isEmpty
                       ? styles.voiceDotTextInactive
-                      : voiceSelection[voice]
+                      : effectiveVoiceSelection[voice]
                         ? styles.voiceDotTextActive
                         : styles.voiceDotTextInactive,
                   ]}

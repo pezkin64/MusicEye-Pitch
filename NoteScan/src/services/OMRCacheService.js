@@ -3,7 +3,7 @@
  *
  * Caches parsed OMR results (scoreData) by image content hash.
  * Scanning the same photo twice returns the cached result instantly
- * instead of re-uploading and re-processing through Audiveris (~30s).
+ * instead of re-uploading and re-processing through the OMR engine.
  *
  * Uses expo-crypto for SHA-256 hashing and AsyncStorage for persistence.
  * Cache entries expire after 7 days to avoid stale data buildup.
@@ -12,8 +12,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Crypto from 'expo-crypto';
 import { File } from 'expo-file-system/next';
 
-const CACHE_PREFIX = 'omr_cache_v7_';
-const INDEX_KEY = 'omr_cache_index_v7';
+const CACHE_PREFIX = 'omr_cache_v8_';
+const INDEX_KEY = 'omr_cache_index_v8';
 const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const MAX_ENTRIES = 20; // keep at most 20 cached results
 
