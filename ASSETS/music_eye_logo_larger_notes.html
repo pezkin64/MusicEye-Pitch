@@ -1,0 +1,278 @@
+
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+@keyframes blink{0%,88%,100%{transform:scaleY(1)}92%{transform:scaleY(0.04)}96%{transform:scaleY(0.04)}}
+@keyframes drift{0%,25%{transform:translate(0,0)}30%,55%{transform:translate(5px,-3px)}60%,85%{transform:translate(-4px,3px)}90%,100%{transform:translate(0,0)}}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes pulseRing{0%{r:22;opacity:0.9;stroke-width:2.5}100%{r:44;opacity:0;stroke-width:0.5}}
+.wrap{padding:2rem 1rem;display:flex;flex-direction:column;gap:2rem;align-items:center;animation:fadeIn 0.6s ease both}
+.section-label{font-size:11px;letter-spacing:3px;text-transform:uppercase;color:var(--color-text-secondary);margin-bottom:0.75rem;text-align:center}
+.icon-shell{border-radius:22.4%;overflow:hidden;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.icon-shell.light{background:#faf7f2}
+.icon-shell.dark{background:#1a1208}
+.wordmark-card{background:var(--color-background-primary);border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-lg);padding:1.5rem 2rem;display:flex;align-items:center;gap:1.25rem;width:100%;max-width:400px}
+.wordmark-title{font-family:Georgia,serif;font-size:18px;letter-spacing:6px;color:#2a1e10;font-weight:400}
+.wordmark-sub{font-family:Georgia,serif;font-size:9px;letter-spacing:4px;color:#b09060;text-transform:uppercase;margin-top:4px}
+.wordmark-card.dk{background:#1a1208;border-color:#3a2a14}
+.wordmark-card.dk .wordmark-title{color:#f0e4c0}
+.wordmark-card.dk .wordmark-sub{color:#c9a96e}
+.divider{width:100%;max-width:440px;height:0.5px;background:var(--color-border-tertiary)}
+.status{font-family:Georgia,serif;font-size:10px;letter-spacing:3px;color:#c9a96e;text-transform:uppercase;height:16px;text-align:center;transition:opacity 0.25s}
+</style>
+
+<div class="wrap">
+
+  <!-- Main hero icon -->
+  <div>
+    <div class="section-label">App icon</div>
+    <div class="icon-shell light" style="width:140px;height:140px">
+      <svg width="118" height="118" viewBox="0 0 82 82" style="overflow:visible;">
+        <defs><clipPath id="mainClip"><path d="M4,41 Q41,-8 78,41 Q41,90 4,41Z"/></clipPath></defs>
+        <g style="animation:blink 6s ease-in-out infinite;transform-origin:41px 41px;">
+          <path d="M4,41 Q41,-8 78,41 Q41,90 4,41Z" fill="#faf7f2" stroke="#2a1e10" stroke-width="1.5"/>
+          <g clip-path="url(#mainClip)">
+            <circle cx="41" cy="41" r="22" fill="#e8dcc8"/>
+            <circle cx="41" cy="41" r="22" fill="none" stroke="#2a1e10" stroke-width="1"/>
+            <circle id="pr" cx="41" cy="41" r="22" fill="none" stroke="#c9a96e" stroke-width="2" opacity="0" style="pointer-events:none"/>
+            <g style="animation:drift 8s cubic-bezier(.45,.05,.55,.95) infinite;transform-origin:41px 41px;">
+              <circle cx="41" cy="41" r="13" fill="#2a1e10"/>
+              <g id="noteLayer" style="opacity:0;transition:opacity 0.35s ease;transform-box:fill-box;transform-origin:center;">
+                <text id="noteTxt" x="41" y="45" text-anchor="middle" dominant-baseline="middle"
+                  font-family="Georgia,serif" font-size="16" fill="white"
+                  style="transition:fill 0.25s ease, font-size 0.2s ease;">♪</text>
+              </g>
+              <circle cx="35" cy="34" r="2.5" fill="white" opacity="0.85"/>
+            </g>
+          </g>
+          <path d="M4,41 Q41,-8 78,41" fill="none" stroke="#2a1e10" stroke-width="1.5" stroke-linecap="round"/>
+          <path d="M4,41 Q41,90 78,41" fill="none" stroke="#2a1e10" stroke-width="1" stroke-linecap="round"/>
+        </g>
+      </svg>
+    </div>
+    <div id="status" class="status" style="opacity:0;margin-top:10px"></div>
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- Size row -->
+  <div>
+    <div class="section-label">Sizes</div>
+    <div style="display:flex;gap:1.5rem;align-items:flex-end;justify-content:center;flex-wrap:wrap">
+
+      <!-- 64px light -->
+      <div style="display:flex;flex-direction:column;align-items:center;gap:6px">
+        <div class="icon-shell light" style="width:64px;height:64px">
+          <svg width="54" height="54" viewBox="0 0 82 82" style="overflow:visible;">
+            <defs><clipPath id="c64"><path d="M4,41 Q41,-8 78,41 Q41,90 4,41Z"/></clipPath></defs>
+            <g style="animation:blink 6s ease-in-out infinite 0.5s;transform-origin:41px 41px;">
+              <path d="M4,41 Q41,-8 78,41 Q41,90 4,41Z" fill="#faf7f2" stroke="#2a1e10" stroke-width="1.5"/>
+              <g clip-path="url(#c64)">
+                <circle cx="41" cy="41" r="22" fill="#e8dcc8"/>
+                <circle cx="41" cy="41" r="22" fill="none" stroke="#2a1e10" stroke-width="1"/>
+                <circle id="pr64" cx="41" cy="41" r="22" fill="none" stroke="#c9a96e" stroke-width="2" opacity="0"/>
+                <g style="animation:drift 8s cubic-bezier(.45,.05,.55,.95) infinite 1s;transform-origin:41px 41px;">
+                  <circle cx="41" cy="41" r="13" fill="#2a1e10"/>
+                  <g id="nl64" style="opacity:0;transition:opacity 0.35s;transform-box:fill-box;transform-origin:center;">
+                    <text id="nt64" x="41" y="45" text-anchor="middle" dominant-baseline="middle" font-family="Georgia,serif" font-size="16" fill="white" style="transition:fill 0.25s;">♪</text>
+                  </g>
+                  <circle cx="35" cy="34" r="2.5" fill="white" opacity="0.85"/>
+                </g>
+              </g>
+              <path d="M4,41 Q41,-8 78,41" fill="none" stroke="#2a1e10" stroke-width="1.5" stroke-linecap="round"/>
+              <path d="M4,41 Q41,90 78,41" fill="none" stroke="#2a1e10" stroke-width="1" stroke-linecap="round"/>
+            </g>
+          </svg>
+        </div>
+        <span style="font-size:11px;color:var(--color-text-secondary);letter-spacing:1px">64 px</span>
+      </div>
+
+      <!-- 48px light -->
+      <div style="display:flex;flex-direction:column;align-items:center;gap:6px">
+        <div class="icon-shell light" style="width:48px;height:48px">
+          <svg width="40" height="40" viewBox="0 0 82 82">
+            <defs><clipPath id="c48"><path d="M4,41 Q41,-8 78,41 Q41,90 4,41Z"/></clipPath></defs>
+            <g style="animation:blink 6s ease-in-out infinite 1s;transform-origin:41px 41px;">
+              <path d="M4,41 Q41,-8 78,41 Q41,90 4,41Z" fill="#faf7f2" stroke="#2a1e10" stroke-width="1.5"/>
+              <g clip-path="url(#c48)">
+                <circle cx="41" cy="41" r="22" fill="#e8dcc8"/>
+                <circle cx="41" cy="41" r="22" fill="none" stroke="#2a1e10" stroke-width="1"/>
+                <circle id="pr48" cx="41" cy="41" r="22" fill="none" stroke="#c9a96e" stroke-width="2" opacity="0"/>
+                <g style="animation:drift 8s cubic-bezier(.45,.05,.55,.95) infinite 2s;transform-origin:41px 41px;">
+                  <circle cx="41" cy="41" r="13" fill="#2a1e10"/>
+                  <g id="nl48" style="opacity:0;transition:opacity 0.35s;transform-box:fill-box;transform-origin:center;">
+                    <text id="nt48" x="41" y="45" text-anchor="middle" dominant-baseline="middle" font-family="Georgia,serif" font-size="16" fill="white" style="transition:fill 0.25s;">♪</text>
+                  </g>
+                  <circle cx="35" cy="34" r="2.5" fill="white" opacity="0.85"/>
+                </g>
+              </g>
+              <path d="M4,41 Q41,-8 78,41" fill="none" stroke="#2a1e10" stroke-width="1.5" stroke-linecap="round"/>
+              <path d="M4,41 Q41,90 78,41" fill="none" stroke="#2a1e10" stroke-width="1" stroke-linecap="round"/>
+            </g>
+          </svg>
+        </div>
+        <span style="font-size:11px;color:var(--color-text-secondary);letter-spacing:1px">48 px</span>
+      </div>
+
+      <!-- 96px dark -->
+      <div style="display:flex;flex-direction:column;align-items:center;gap:6px">
+        <div class="icon-shell dark" style="width:96px;height:96px">
+          <svg width="82" height="82" viewBox="0 0 82 82" style="overflow:visible;">
+            <defs><clipPath id="cdk"><path d="M4,41 Q41,-8 78,41 Q41,90 4,41Z"/></clipPath></defs>
+            <g style="animation:blink 6s ease-in-out infinite 1.8s;transform-origin:41px 41px;">
+              <path d="M4,41 Q41,-8 78,41 Q41,90 4,41Z" fill="#1a1208" stroke="#c9a96e" stroke-width="1.5"/>
+              <g clip-path="url(#cdk)">
+                <circle cx="41" cy="41" r="22" fill="#3a2a14"/>
+                <circle cx="41" cy="41" r="22" fill="none" stroke="#c9a96e" stroke-width="1"/>
+                <circle id="prdk" cx="41" cy="41" r="22" fill="none" stroke="#f0c840" stroke-width="2" opacity="0"/>
+                <g style="animation:drift 8s cubic-bezier(.45,.05,.55,.95) infinite 0.8s;transform-origin:41px 41px;">
+                  <circle cx="41" cy="41" r="13" fill="#c9a96e"/>
+                  <g id="nldk" style="opacity:0;transition:opacity 0.35s;transform-box:fill-box;transform-origin:center;">
+                    <text id="ntdk" x="41" y="45" text-anchor="middle" dominant-baseline="middle" font-family="Georgia,serif" font-size="16" fill="#1a1208" style="transition:fill 0.25s;">♪</text>
+                  </g>
+                  <circle cx="35" cy="34" r="2.5" fill="#f0e4c0" opacity="0.9"/>
+                </g>
+              </g>
+              <path d="M4,41 Q41,-8 78,41" fill="none" stroke="#c9a96e" stroke-width="1.5" stroke-linecap="round"/>
+              <path d="M4,41 Q41,90 78,41" fill="none" stroke="#c9a96e" stroke-width="1" stroke-linecap="round"/>
+            </g>
+          </svg>
+        </div>
+        <span style="font-size:11px;color:var(--color-text-secondary);letter-spacing:1px">dark 96 px</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- Wordmarks -->
+  <div style="display:flex;flex-direction:column;gap:1rem;width:100%;max-width:400px">
+    <div class="wordmark-card">
+      <div class="icon-shell light" style="width:52px;height:52px;flex-shrink:0">
+        <svg width="44" height="44" viewBox="0 0 82 82" style="overflow:visible;">
+          <defs><clipPath id="cwl"><path d="M4,41 Q41,-8 78,41 Q41,90 4,41Z"/></clipPath></defs>
+          <g style="animation:blink 6s ease-in-out infinite 2s;transform-origin:41px 41px;">
+            <path d="M4,41 Q41,-8 78,41 Q41,90 4,41Z" fill="#faf7f2" stroke="#2a1e10" stroke-width="1.5"/>
+            <g clip-path="url(#cwl)">
+              <circle cx="41" cy="41" r="22" fill="#e8dcc8"/>
+              <circle cx="41" cy="41" r="22" fill="none" stroke="#2a1e10" stroke-width="1"/>
+              <circle id="prwl" cx="41" cy="41" r="22" fill="none" stroke="#c9a96e" stroke-width="2" opacity="0"/>
+              <g style="animation:drift 8s ease-in-out infinite 3s;transform-origin:41px 41px;">
+                <circle cx="41" cy="41" r="13" fill="#2a1e10"/>
+                <g id="nlwl" style="opacity:0;transition:opacity 0.35s;transform-box:fill-box;transform-origin:center;">
+                  <text id="ntwl" x="41" y="45" text-anchor="middle" dominant-baseline="middle" font-family="Georgia,serif" font-size="16" fill="white" style="transition:fill 0.25s;">♪</text>
+                </g>
+                <circle cx="35" cy="34" r="2.5" fill="white" opacity="0.85"/>
+              </g>
+            </g>
+            <path d="M4,41 Q41,-8 78,41" fill="none" stroke="#2a1e10" stroke-width="1.5" stroke-linecap="round"/>
+            <path d="M4,41 Q41,90 78,41" fill="none" stroke="#2a1e10" stroke-width="1" stroke-linecap="round"/>
+          </g>
+        </svg>
+      </div>
+      <div style="width:1px;height:32px;background:#c9a96e;opacity:0.5;flex-shrink:0"></div>
+      <div><div class="wordmark-title">MUSIC EYE</div><div class="wordmark-sub">scan · listen · feel</div></div>
+    </div>
+
+    <div class="wordmark-card dk">
+      <div class="icon-shell dark" style="width:52px;height:52px;flex-shrink:0">
+        <svg width="44" height="44" viewBox="0 0 82 82" style="overflow:visible;">
+          <defs><clipPath id="cwd"><path d="M4,41 Q41,-8 78,41 Q41,90 4,41Z"/></clipPath></defs>
+          <g style="animation:blink 6s ease-in-out infinite 0.2s;transform-origin:41px 41px;">
+            <path d="M4,41 Q41,-8 78,41 Q41,90 4,41Z" fill="#1a1208" stroke="#c9a96e" stroke-width="1.5"/>
+            <g clip-path="url(#cwd)">
+              <circle cx="41" cy="41" r="22" fill="#3a2a14"/>
+              <circle cx="41" cy="41" r="22" fill="none" stroke="#c9a96e" stroke-width="1"/>
+              <circle id="prwd" cx="41" cy="41" r="22" fill="none" stroke="#f0c840" stroke-width="2" opacity="0"/>
+              <g style="animation:drift 8s ease-in-out infinite 4s;transform-origin:41px 41px;">
+                <circle cx="41" cy="41" r="13" fill="#c9a96e"/>
+                <g id="nlwd" style="opacity:0;transition:opacity 0.35s;transform-box:fill-box;transform-origin:center;">
+                  <text id="ntwd" x="41" y="45" text-anchor="middle" dominant-baseline="middle" font-family="Georgia,serif" font-size="16" fill="#1a1208" style="transition:fill 0.25s;">♪</text>
+                </g>
+                <circle cx="35" cy="34" r="2.5" fill="#f0e4c0" opacity="0.9"/>
+              </g>
+            </g>
+            <path d="M4,41 Q41,-8 78,41" fill="none" stroke="#c9a96e" stroke-width="1.5" stroke-linecap="round"/>
+            <path d="M4,41 Q41,90 78,41" fill="none" stroke="#c9a96e" stroke-width="1" stroke-linecap="round"/>
+          </g>
+        </svg>
+      </div>
+      <div style="width:1px;height:32px;background:#c9a96e;opacity:0.4;flex-shrink:0"></div>
+      <div><div class="wordmark-title">MUSIC EYE</div><div class="wordmark-sub">scan · listen · feel</div></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const NOTES  = ['♪','♫','♩','♬'];
+const LABELS = ['♪ detected','♫ detected','♩ detected','♬ detected'];
+
+const eyes = [
+  { nl:'noteLayer', nt:'noteTxt', pr:'pr',   light:true,  off:0    },
+  { nl:'nl64',      nt:'nt64',    pr:'pr64', light:true,  off:600  },
+  { nl:'nl48',      nt:'nt48',    pr:'pr48', light:true,  off:1100 },
+  { nl:'nldk',      nt:'ntdk',    pr:'prdk', light:false, off:300  },
+  { nl:'nlwl',      nt:'ntwl',    pr:'prwl', light:true,  off:900  },
+  { nl:'nlwd',      nt:'ntwd',    pr:'prwd', light:false, off:1500 },
+];
+
+let idx = 0;
+
+function runCycle(eye, noteIdx) {
+  const nl = document.getElementById(eye.nl);
+  const nt = document.getElementById(eye.nt);
+  const pr = document.getElementById(eye.pr);
+  if (!nl || !nt) return;
+
+  const sym        = NOTES[noteIdx % NOTES.length];
+  const normalFill = eye.light ? 'white' : '#1a1208';
+  const detectFill = '#f0b840';
+
+  // reset: start from right, invisible
+  nl.style.transition = 'none';
+  nl.style.transform  = 'translateX(16px)';
+  nl.style.opacity    = '0';
+  nt.textContent      = sym;
+  nt.style.fill       = normalFill;
+  nt.style.fontSize   = '16px';
+
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    nl.style.transition = 'opacity 0.38s ease, transform 0.42s cubic-bezier(.22,.68,0,1.2)';
+    nl.style.transform  = 'translateX(0)';
+    nl.style.opacity    = '1';
+  }));
+
+  // detected: turn orange + bump size
+  setTimeout(() => {
+    nt.style.fill     = detectFill;
+    nt.style.fontSize = '19px';
+    if (pr) { pr.style.animation = 'none'; pr.style.opacity = '0'; }
+    requestAnimationFrame(() => { if (pr) pr.style.animation = 'pulseRing 0.85s ease-out forwards'; });
+    if (eye.nl === 'noteLayer') {
+      const lbl = document.getElementById('status');
+      lbl.textContent  = LABELS[noteIdx % LABELS.length];
+      lbl.style.opacity = '1';
+    }
+  }, 680);
+
+  // swipe out left
+  setTimeout(() => {
+    nt.style.fill     = normalFill;
+    nt.style.fontSize = '16px';
+    nl.style.transition = 'opacity 0.35s ease, transform 0.4s cubic-bezier(.55,0,1,.45)';
+    nl.style.transform  = 'translateX(-16px)';
+    nl.style.opacity    = '0';
+    if (eye.nl === 'noteLayer') {
+      document.getElementById('status').style.opacity = '0';
+    }
+  }, 1550);
+}
+
+function tick() {
+  eyes.forEach(eye => setTimeout(() => runCycle(eye, idx), eye.off));
+  idx = (idx + 1) % NOTES.length;
+}
+
+tick();
+setInterval(tick, 2800);
+</script>

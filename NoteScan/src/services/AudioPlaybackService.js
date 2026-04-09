@@ -50,6 +50,30 @@ export class AudioPlaybackService {
   static _CHUNK_SIZE = 4096;       // samples per chunk (~93ms at 44100)
   static _LOOKAHEAD_SEC = 0.5;     // seconds of audio to buffer ahead
   static _FEED_MS = 30;            // ms between feed timer ticks
+  static _beatMarkers = null;      // [{ beatOffset, accent }]
+  static _beatMarkersOnset = null; // [{ beatOffset, accent }]
+  static _beatMarkersOnsetExternal = null; // [{ beatOffset, accent }]
+  static _beatOnlyMode = false;
+
+  static setBeatOnlyMode(enabled) {
+    this._beatOnlyMode = !!enabled;
+  }
+
+  static setExternalBeatGuideOnsets(beatOffsets, options = {}) {
+    const offsets = Array.isArray(beatOffsets)
+      ? beatOffsets.filter((b) => Number.isFinite(b))
+      : [];
+    if (offsets.length === 0) {
+      this._beatMarkersOnsetExternal = null;
+      return;
+    }
+    const measureBeats = Array.isArray(options.measureBeats) ? options.measureBeats : [];
+    const fallbackTotal = this._totalBeatsCanonical || this._totalBeatsCompressed || this._totalBeats || 0;
+    const totalBeats = Number.isFinite(options.totalBeats) && options.totalBeats > 0
+      ? options.totalBeats
+      : fallbackTotal;
+    this._beatMarkersOnsetExternal = this._buildOnsetBeatMarkers(offsets, measureBeats, totalBeats);
+  }
 
   /* ─── SoundFont loading ─── */
 
@@ -110,6 +134,90 @@ export class AudioPlaybackService {
   static _normalizeBeatOffset(beat) {
     if (!Number.isFinite(beat)) return 0;
     return Math.round(beat * 1000000) / 1000000;
+  }
+
+  static _buildBeatMarkers(measureBeats, totalBeats) {
+    const measures = Array.isArray(measureBeats) ? measureBeats : [];
+    const downbeats = measures
+      .map((m) => Number(m?.startBeat))
+      .filter((b) => Number.isFinite(b))
+      .map((b) => this._normalizeBeatOffset(b));
+
+    const maxBeat = Math.max(0, Math.ceil(Number(totalBeats) || 0));
+    const markers = [];
+    for (let beat = 0; beat <= maxBeat; beat += 1) {
+      const beatOffset = this._normalizeBeatOffset(beat);
+      const isDownbeat = downbeats.some((db) => Math.abs(db - beatOffset) < 0.001);
+      markers.push({ beatOffset, accent: isDownbeat || beat === 0 ? 1 : 0.68 });
+    }
+    return markers;
+  }
+
+  static _buildOnsetBeatMarkers(beatOffsets, measureBeats, totalBeats) {
+    const offsets = Array.isArray(beatOffsets)
+      ? beatOffsets.filter((b) => Number.isFinite(b)).map((b) => this._normalizeBeatOffset(b))
+      : [];
+
+    if (offsets.length === 0) {
+      return this._buildBeatMarkers(measureBeats, totalBeats);
+    }
+
+    const sorted = [...new Set(offsets)].sort((a, b) => a - b);
+    const measures = Array.isArray(measureBeats) ? measureBeats : [];
+    return sorted.map((beatOffset) => {
+      let accent = 0.78;
+      for (const measure of measures) {
+        const startBeat = Number(measure?.startBeat);
+        const endBeat = Number(measure?.endBeat);
+        if (!Number.isFinite(startBeat) || !Number.isFinite(endBeat) || endBeat <= startBeat) continue;
+        if (beatOffset >= startBeat - 0.001 && beatOffset < endBeat + 0.001) {
+          const beatInMeasure = beatOffset - startBeat;
+          if (Math.abs(beatInMeasure) < 0.001) accent = 1;
+          break;
+        }
+      }
+      return { beatOffset, accent };
+    });
+  }
+
+  static _generateBeatClick(sampleRate = 44100, accent = 1) {
+    const durationSec = accent > 0.8 ? 0.034 : 0.022;
+    const totalSamples = Math.max(1, Math.floor(sampleRate * durationSec));
+    const out = new Float32Array(totalSamples);
+    const startFreq = accent > 0.8 ? 2200 : 1680;
+    const endFreq = accent > 0.8 ? 1560 : 1180;
+    const gain = accent > 0.8 ? 0.34 : 0.24;
+    for (let i = 0; i < totalSamples; i++) {
+      const t = i / Math.max(1, totalSamples - 1);
+      const env = Math.pow(1 - t, 3.4);
+      const freq = startFreq + (endFreq - startFreq) * t;
+      out[i] = Math.sin(2 * Math.PI * freq * (i / sampleRate)) * env * gain * accent;
+    }
+    return out;
+  }
+
+  static _mixBeatGuide(buffer, startSample = 0, sampleRate = 44100, tempo = 120) {
+    const onsetMarkers = this._beatMarkersOnsetExternal || this._beatMarkersOnset;
+    const markers = this._beatOnlyMode
+      ? (onsetMarkers || this._beatMarkers)
+      : this._beatMarkers;
+    if (!buffer || !markers || markers.length === 0) return;
+    const secondsPerBeat = 60 / tempo;
+    const totalSamples = buffer.length || 0;
+    const beatOnlyBoost = this._beatOnlyMode ? 1.45 : 1;
+
+    for (const marker of markers) {
+      const markerSample = Math.floor(marker.beatOffset * secondsPerBeat * sampleRate);
+      const localStart = markerSample - startSample;
+      if (localStart >= totalSamples) continue;
+
+      const click = this._generateBeatClick(sampleRate, marker.accent);
+      for (let i = 0; i < click.length; i++) {
+        const idx = localStart + i;
+        if (idx < 0 || idx >= totalSamples) continue;
+        buffer[idx] += click[i] * beatOnlyBoost;
+      }
+    }
   }
 
   /* ─── Waveform generation ─── */
@@ -267,6 +375,7 @@ export class AudioPlaybackService {
    */
   static prepareNoteEvents(notes, options = {}) {
     const timelineMode = options.timelineMode === 'compressed' ? 'compressed' : 'canonical';
+    const measureBeats = Array.isArray(options.measureBeats) ? options.measureBeats : [];
     this._timelineMode = timelineMode;
     const getBeats = (n) => n.tiedBeats || n.durationBeats || ({
       whole: 4, half: 2, quarter: 1, eighth: 0.5, sixteenth: 0.25,
@@ -275,7 +384,12 @@ export class AudioPlaybackService {
     })[n.duration] || 1;
 
     const hasBeatOffset = notes.some(n => typeof n.beatOffset === 'number' && Number.isFinite(n.beatOffset));
-    if (!hasBeatOffset) return null;
+    if (!hasBeatOffset) {
+      this._beatMarkers = null;
+      this._beatMarkersOnset = null;
+      this._beatMarkersOnsetExternal = null;
+      return null;
+    }
 
     // Keep only real note events for audio scheduling.
     // Rests are tracked separately for cursor timing but must not become synth events.
@@ -514,6 +628,15 @@ export class AudioPlaybackService {
       0
     );
     this._totalBeatsCompressed = totalBeats;
+    this._beatMarkers = this._buildBeatMarkers(
+      measureBeats,
+      this._totalBeatsCanonical || this._totalBeatsCompressed || this._totalBeats
+    );
+    this._beatMarkersOnset = this._buildOnsetBeatMarkers(
+      beatPositions,
+      measureBeats,
+      this._totalBeatsCanonical || this._totalBeatsCompressed || this._totalBeats
+    );
 
     // Pre-generate all waveforms so play/tempo-change is instant
     this._precacheWaveforms();
@@ -580,33 +703,49 @@ export class AudioPlaybackService {
     const t0 = startSample / sampleRate;
     const t1 = (startSample + chunkSize) / sampleRate;
 
-    for (const evt of this._noteEvents) {
-      if (this._voiceSelection && !this._voiceSelection[evt.voice]) continue;
+    if (!this._beatOnlyMode) {
+      for (const evt of this._noteEvents) {
+        if (this._voiceSelection && !this._voiceSelection[evt.voice]) continue;
 
-      const noteStart = evt.beatOffset * spb;
-      const noteDur = evt.durationBeats * spb;
-      const noteEnd = noteStart + noteDur;
+        const noteStart = evt.beatOffset * spb;
+        const noteDur = evt.durationBeats * spb;
+        const noteEnd = noteStart + noteDur;
 
-      if (noteEnd <= t0 || noteStart >= t1) continue;
+        if (noteEnd <= t0 || noteStart >= t1) continue;
 
-      const cacheKey = `${evt.midiNote}_${evt.velocity}`;
-      const waveform = this._noteWaveformCache.get(cacheKey);
-      if (!waveform) continue;
+        const cacheKey = `${evt.midiNote}_${evt.velocity}`;
+        const waveform = this._noteWaveformCache.get(cacheKey);
+        if (!waveform) continue;
 
-      const noteStartSample = Math.round(noteStart * sampleRate);
-      const chunkStart = Math.max(0, noteStartSample - startSample);
-      const waveOffset = Math.max(0, startSample - noteStartSample);
-      const waveEnd = Math.min(waveform.length, Math.round(noteDur * sampleRate));
+        const noteStartSample = Math.round(noteStart * sampleRate);
+        const chunkStart = Math.max(0, noteStartSample - startSample);
+        const waveOffset = Math.max(0, startSample - noteStartSample);
+        const waveEnd = Math.min(waveform.length, Math.round(noteDur * sampleRate));
 
-      for (let i = chunkStart; i < chunkSize; i++) {
-        const wi = waveOffset + (i - chunkStart);
-        if (wi >= waveEnd || wi >= waveform.length) break;
-        chunk[i] += waveform[wi];
+        for (let i = chunkStart; i < chunkSize; i++) {
+          const wi = waveOffset + (i - chunkStart);
+          if (wi >= waveEnd || wi >= waveform.length) break;
+          chunk[i] += waveform[wi];
+        }
       }
     }
 
     // Soft-clip to prevent harsh distortion
     let peak = 0;
+    for (let i = 0; i < chunkSize; i++) {
+      const a = Math.abs(chunk[i]);
+      if (a > peak) peak = a;
+    }
+    if (peak > 1) {
+      const inv = 1 / peak;
+      for (let i = 0; i < chunkSize; i++) chunk[i] *= inv;
+    }
+
+    // Add beat guide after note normalization so dense passages don't bury the pulse.
+    this._mixBeatGuide(chunk, startSample, sampleRate, this._currentTempo);
+
+    // Final light limiter after adding beat guide.
+    peak = 0;
     for (let i = 0; i < chunkSize; i++) {
       const a = Math.abs(chunk[i]);
       if (a > peak) peak = a;
@@ -680,15 +819,14 @@ export class AudioPlaybackService {
   static _startPositionTracking(remainingDuration) {
     this._stopPositionTracking();
     const ctx = this._getAudioContext();
-    const start = this._playStartTime;
-    const offset = this._playStartOffset;
 
     this._positionTimer = setInterval(() => {
       if (!this.isPlaying) {
         this._stopPositionTracking();
         return;
       }
-      const elapsed = ctx.currentTime - start + offset;
+      // Read live playback anchors each tick so seek/tempo changes stay in sync.
+      const elapsed = ctx.currentTime - this._playStartTime + this._playStartOffset;
       if (this._onPositionUpdate) this._onPositionUpdate(elapsed);
 
       if (elapsed >= this._totalBeats * (60 / this._currentTempo)) {
@@ -980,10 +1118,11 @@ export class AudioPlaybackService {
    *
    * @returns {{ timingMap, totalDuration }} - shared timing data
    */
-  static async preRenderVoiceTracks(notes, tempo = 120) {
+  static async preRenderVoiceTracks(notes, tempo = 120, options = {}) {
     const sampleRate = 44100;
     const secondsPerBeat = 60 / tempo;
     const renderKey = `${this.getActivePresetIndex()}`;
+    const measureBeats = Array.isArray(options.measureBeats) ? options.measureBeats : [];
 
     // Reuse cached note grouping data if notes haven't changed
     let beatMap, beatPositions, rests, getBeats;
@@ -1002,6 +1141,9 @@ export class AudioPlaybackService {
         this._voiceRenderKey = null;
         this._cachedNotes = null;
         this._cachedBeatData = null;
+        this._beatMarkers = null;
+        this._beatMarkersOnset = null;
+        this._beatMarkersOnsetExternal = null;
         return null;
       }
 
@@ -1051,10 +1193,12 @@ export class AudioPlaybackService {
 
     // Compute total duration
     let totalDuration = 0;
+    let totalBeats = 0;
     if (beatPositions.length > 0) {
       const lastBeat = beatPositions[beatPositions.length - 1];
       const lastGroup = beatMap.get(lastBeat);
       const maxBeats = Math.max(...lastGroup.map(getBeats));
+      totalBeats = lastBeat + maxBeats;
       totalDuration = (lastBeat + maxBeats) * secondsPerBeat;
     }
 
@@ -1085,6 +1229,8 @@ export class AudioPlaybackService {
     this._voiceTotalDuration = totalDuration;
     this._voiceRenderKey = renderKey;
     this._renderTempo = tempo;
+    this._beatMarkers = this._buildBeatMarkers(measureBeats, totalBeats);
+    this._beatMarkersOnset = this._buildOnsetBeatMarkers(beatPositions, measureBeats, totalBeats);
 
     console.log(`🎹 Pre-rendered 4 voice tracks (${(totalDuration).toFixed(1)}s, ${totalSamples} samples)`);
     return { timingMap, totalDuration };
@@ -1114,10 +1260,21 @@ export class AudioPlaybackService {
     let peak = 0;
     for (let i = 0; i < totalSamples; i++) {
       let sum = 0;
-      for (const v of activeVoices) sum += this._voiceBuffers[v][i];
+      if (!this._beatOnlyMode) {
+        for (const v of activeVoices) sum += this._voiceBuffers[v][i];
+      }
       if (!Number.isFinite(sum)) sum = 0;
       master[i] = sum;
       const abs = sum < 0 ? -sum : sum;
+      if (abs > peak) peak = abs;
+    }
+
+    this._mixBeatGuide(master, 0, sampleRate, this._renderTempo || 120);
+
+    // Recompute peak including beat guide so normalization stays safe and predictable.
+    peak = 0;
+    for (let i = 0; i < totalSamples; i++) {
+      const abs = Math.abs(master[i]);
       if (abs > peak) peak = abs;
     }
 
@@ -1524,5 +1681,14 @@ export class AudioPlaybackService {
         await this.sound.setPositionAsync(Math.floor(timeSeconds * 1000));
       } catch (e) { /* ignore */ }
     }
+  }
+
+  static getPlaybackPositionSec() {
+    if (this._useWebAudio) {
+      const ctx = this._getAudioContext();
+      if (!ctx) return 0;
+      return Math.max(0, ctx.currentTime - this._playStartTime + this._playStartOffset);
+    }
+    return 0;
   }
 }

@@ -4,15 +4,21 @@ import * as ImagePicker from 'expo-image-picker';
 import { HomeScreen } from './src/screens/HomeScreen';
 import { PlaybackScreen } from './src/screens/PlaybackScreen';
 import { SettingsScreen } from './src/screens/SettingsScreen';
+import { FileUploadScreen } from './src/screens/FileUploadScreen';
+import { LibraryScreen } from './src/screens/LibraryScreen';
 import { OMRSettings } from './src/services/OMRSettings';
+import { LibraryService } from './src/services/LibraryService';
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState('home');
   const [playbackImageUri, setPlaybackImageUri] = useState(null);
+  const [playbackScoreData, setPlaybackScoreData] = useState(null);
+  const [playbackScoreEntry, setPlaybackScoreEntry] = useState(null);
 
   // Load saved OMR engine preference on startup
   useEffect(() => {
     OMRSettings.load();
+    LibraryService.load();
   }, []);
 
   const pickImageFromGallery = async () => {
@@ -25,7 +31,7 @@ export default function App() {
       }
 
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: ['images'],
         allowsEditing: false,
         quality: 1,
       });
@@ -36,6 +42,8 @@ export default function App() {
 
       const asset = result.assets[0];
       setPlaybackImageUri(asset.uri);
+      setPlaybackScoreData(null);
+      setPlaybackScoreEntry(null);
       setCurrentScreen('playback');
     } catch (err) {
       console.error('Error picking image:', err?.message || err);
@@ -53,7 +61,7 @@ export default function App() {
       }
 
       const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: ['images'],
         allowsEditing: false,
         quality: 1,
       });
@@ -64,10 +72,41 @@ export default function App() {
 
       const asset = result.assets[0];
       setPlaybackImageUri(asset.uri);
+      setPlaybackScoreData(null);
+      setPlaybackScoreEntry(null);
       setCurrentScreen('playback');
     } catch (err) {
       console.error('Error capturing image:', err?.message || err);
       Alert.alert('Error', 'Failed to capture image. Please try again.');
+    }
+  };
+
+  const handleFileSelected = (fileUri) => {
+    setPlaybackImageUri(fileUri);
+    setPlaybackScoreData(null);
+    setPlaybackScoreEntry(null);
+    setCurrentScreen('playback');
+  };
+
+  const handleScoreTapFromLibrary = (scoreData, entry) => {
+    setPlaybackImageUri(null);
+    setPlaybackScoreData(scoreData);
+    setPlaybackScoreEntry(entry);
+    setCurrentScreen('playback');
+  };
+
+  const handlePlaybackComplete = async (scoreData, engine) => {
+    // After successful playback, optionally add to library
+    // (can be done manually by user, or automatically here)
+    try {
+      const entry = await LibraryService.addScore(
+        scoreData,
+        engine,
+        scoreData?.metadata?.workTitle || 'Scanned Score'
+      );
+      console.log('Score saved to library:', entry);
+    } catch (e) {
+      console.warn('Failed to save to library:', e.message);
     }
   };
 
@@ -83,20 +122,20 @@ export default function App() {
       ) : currentScreen === 'playback' ? (
         <PlaybackScreen
           imageUri={playbackImageUri}
+          scoreData={playbackScoreData}
+          scoreEntry={playbackScoreEntry}
           onNavigateBack={() => setCurrentScreen('home')}
+          onScoredSaved={handlePlaybackComplete}
         />
       ) : currentScreen === 'settings' ? (
         <SettingsScreen
           onNavigateBack={() => setCurrentScreen('home')}
         />
       ) : currentScreen === 'upload-file' ? (
-        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F9F7F1' }}>
-          <Text style={{ fontSize: 18, color: '#3E3C37', marginBottom: 20 }}>📄 Upload Files</Text>
-          <Text style={{ fontSize: 14, color: '#6E675E', marginBottom: 20 }}>Coming soon...</Text>
-          <TouchableOpacity onPress={() => setCurrentScreen('home')}>
-            <Text style={{ color: '#6E675E', fontSize: 16, fontWeight: '600' }}>← Back to Home</Text>
-          </TouchableOpacity>
-        </View>
+        <FileUploadScreen
+          onNavigateBack={() => setCurrentScreen('home')}
+          onFileSelected={handleFileSelected}
+        />
       ) : currentScreen === 'help' ? (
         <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F9F7F1' }}>
           <Text style={{ fontSize: 18, color: '#3E3C37', marginBottom: 20 }}>❓ Help</Text>
@@ -113,13 +152,10 @@ export default function App() {
           </TouchableOpacity>
         </View>
       ) : currentScreen === 'library' ? (
-        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F9F7F1' }}>
-          <Text style={{ fontSize: 18, color: '#3E3C37', marginBottom: 20 }}>🎼 Scanned Music</Text>
-          <Text style={{ fontSize: 14, color: '#6E675E', marginBottom: 20 }}>Coming soon...</Text>
-          <TouchableOpacity onPress={() => setCurrentScreen('home')}>
-            <Text style={{ color: '#6E675E', fontSize: 16, fontWeight: '600' }}>← Back to Home</Text>
-          </TouchableOpacity>
-        </View>
+        <LibraryScreen
+          onNavigateBack={() => setCurrentScreen('home')}
+          onScoreTap={handleScoreTapFromLibrary}
+        />
       ) : null}
     </View>
   );

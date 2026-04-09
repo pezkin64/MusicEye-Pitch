@@ -6,17 +6,19 @@ import {
   TouchableOpacity,
   Pressable,
   ScrollView,
-  ActivityIndicator,
   Alert,
   Platform,
   StatusBar,
   Modal,
   FlatList,
+  Animated,
+  Easing,
 } from 'react-native';
 import { File, Paths } from 'expo-file-system/next';
 import * as Sharing from 'expo-sharing';
 import Slider from '@react-native-community/slider';
 import { Feather } from '@expo/vector-icons';
+import { WebView } from 'react-native-webview';
 import { AudioPlaybackService } from '../services/AudioPlaybackService';
 import { PlaybackVisualization } from '../components/PlaybackVisualization';
 import { RenderedScoreView } from '../components/RenderedScoreView';
@@ -47,12 +49,13 @@ const barPalette = {
 
 // Temporary debug switch: disable pitch panel to isolate playback behavior.
 const ENABLE_PITCH_VIEW = false;
-const AUDIO_TIMELINE_MODE = 'compressed'; // 'canonical' | 'compressed'
+const AUDIO_TIMELINE_MODE = 'canonical'; // 'canonical' | 'compressed'
 const RENDERED_PLAYHEAD_MODES = ['line', 'notes', 'both'];
-const RENDERED_HIGHLIGHT_COLORS = ['#E05A2A', '#F08A45', '#C94B1A', '#FFB36A'];
+const RENDERED_HIGHLIGHT_COLORS = ['#F08A45', '#C94B1A', '#6B4226', '#8B5E3C'];
 const RENDER_VIEW_PRESETS = ['smart', 'fit'];
-const CLEF_FILTERS = ['both', 'upper', 'lower'];
 const RENDER_ENGINES = ['osmd', 'verovio'];
+const RENDER_VISUAL_LEAD_MS = 0;
+const PLAYBACK_UI_UPDATE_MS = 16;
 
 const DURATION_TO_BEATS = {
   whole: 4,
@@ -69,6 +72,140 @@ const DURATION_TO_BEATS = {
   dotted_sixteenth: 0.375,
   dotted_32nd: 0.1875,
 };
+
+const loadingEyeHtml = `
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        overflow: hidden;
+      }
+      @keyframes blink {
+        0%, 88%, 100% { transform: scaleY(1); }
+        92%, 96% { transform: scaleY(0.04); }
+      }
+      @keyframes drift {
+        0%, 25% { transform: translate(0,0); }
+        30%, 55% { transform: translate(5px,-3px); }
+        60%, 85% { transform: translate(-4px,3px); }
+        90%, 100% { transform: translate(0,0); }
+      }
+      @keyframes pulseRing {
+        0% { r: 22; opacity: 0.9; stroke-width: 2.5; }
+        100% { r: 44; opacity: 0; stroke-width: 0.5; }
+      }
+      .wrap {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .eye {
+        animation: blink 6s ease-in-out infinite;
+        transform-origin: 41px 41px;
+      }
+      .pupil {
+        animation: drift 8s cubic-bezier(.45,.05,.55,.95) infinite;
+        transform-origin: 41px 41px;
+      }
+      #noteLayer {
+        opacity: 0;
+        transition: opacity 0.35s ease;
+        transform-box: fill-box;
+        transform-origin: center;
+      }
+      #noteTxt {
+        transition: fill 0.25s ease, font-size 0.2s ease;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <svg width="110" height="82" viewBox="0 0 82 82" style="overflow:visible;">
+        <defs><clipPath id="loadingMainClip"><path d="M4,41 Q41,-8 78,41 Q41,90 4,41Z"/></clipPath></defs>
+        <g class="eye">
+          <path d="M4,41 Q41,-8 78,41 Q41,90 4,41Z" fill="#faf7f2" stroke="#2a1e10" stroke-width="1.5"/>
+          <g clip-path="url(#loadingMainClip)">
+            <circle cx="41" cy="41" r="22" fill="#e8dcc8"/>
+            <circle cx="41" cy="41" r="22" fill="none" stroke="#2a1e10" stroke-width="1"/>
+            <circle id="pr" cx="41" cy="41" r="22" fill="none" stroke="#c9a96e" stroke-width="2" opacity="0"/>
+            <g class="pupil">
+              <circle cx="41" cy="41" r="13" fill="#2a1e10"/>
+              <g id="noteLayer">
+                <text id="noteTxt" x="41" y="45" text-anchor="middle" dominant-baseline="middle" font-family="Georgia,serif" font-size="16" fill="white">♪</text>
+              </g>
+              <circle cx="35" cy="34" r="2.5" fill="white" opacity="0.85"/>
+            </g>
+          </g>
+          <path d="M4,41 Q41,-8 78,41" fill="none" stroke="#2a1e10" stroke-width="1.5" stroke-linecap="round"/>
+          <path d="M4,41 Q41,90 78,41" fill="none" stroke="#2a1e10" stroke-width="1" stroke-linecap="round"/>
+        </g>
+      </svg>
+    </div>
+
+    <script>
+      const NOTES = ['♪','♫','♩','♬'];
+      let idx = 0;
+
+      function runCycle(noteIdx) {
+        const nl = document.getElementById('noteLayer');
+        const nt = document.getElementById('noteTxt');
+        const pr = document.getElementById('pr');
+        if (!nl || !nt) return;
+
+        const sym = NOTES[noteIdx % NOTES.length];
+        const normalFill = 'white';
+        const detectFill = '#f0b840';
+
+        nl.style.transition = 'none';
+        nl.style.transform = 'translateX(16px)';
+        nl.style.opacity = '0';
+        nt.textContent = sym;
+        nt.style.fill = normalFill;
+        nt.style.fontSize = '16px';
+
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          nl.style.transition = 'opacity 0.38s ease, transform 0.42s cubic-bezier(.22,.68,0,1.2)';
+          nl.style.transform = 'translateX(0)';
+          nl.style.opacity = '1';
+        }));
+
+        setTimeout(() => {
+          nt.style.fill = detectFill;
+          nt.style.fontSize = '19px';
+          if (pr) { pr.style.animation = 'none'; pr.style.opacity = '0'; }
+          requestAnimationFrame(() => { if (pr) pr.style.animation = 'pulseRing 0.85s ease-out forwards'; });
+        }, 680);
+
+        setTimeout(() => {
+          nt.style.fill = normalFill;
+          nt.style.fontSize = '16px';
+          nl.style.transition = 'opacity 0.35s ease, transform 0.4s cubic-bezier(.55,0,1,.45)';
+          nl.style.transform = 'translateX(-16px)';
+          nl.style.opacity = '0';
+        }, 1550);
+      }
+
+      function tick() {
+        runCycle(idx);
+        idx = (idx + 1) % NOTES.length;
+      }
+
+      tick();
+      setInterval(tick, 2800);
+    </script>
+  </body>
+</html>
+`;
 
 function buildPitchTimelineFromScoreData(notes, tempoBpm) {
   if (!Array.isArray(notes) || !notes.length || !Number.isFinite(tempoBpm) || tempoBpm <= 0) {
@@ -296,18 +433,19 @@ function getLiteralPlaybackNotes(scoreData) {
 }
 
 /* ─── Component ─── */
-export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
+export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEntry, onNavigateBack, onScoredSaved }) => {
   /* ── State ── */
-  const [scoreData, setScoreData] = useState(null);
+  const [scoreData, setScoreData] = useState(incomingScoreData || null);
   const [scoreError, setScoreError] = useState(null);
-  const [processing, setProcessing] = useState(true);
+  const [processing, setProcessing] = useState(!incomingScoreData); // Don't process if scoreData already provided
   const [processingStage, setProcessingStage] = useState('');
+  const [scanProgress, setScanProgress] = useState(0);
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [preparing, setPreparing] = useState(false);
-  const [tempo, setTempo] = useState(120);
-  const [sliderTempo, setSliderTempo] = useState(120);
+  const [tempo, setTempo] = useState(incomingScoreData?.metadata?.tempo || 120);
+  const [sliderTempo, setSliderTempo] = useState(incomingScoreData?.metadata?.tempo || 120);
   const [showTempoSlider, setShowTempoSlider] = useState(false);
 
   const [playbackTime, setPlaybackTime] = useState(0);
@@ -327,15 +465,25 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
   const [renderEngine, setRenderEngine] = useState(OMRSettings.getDefaultRenderer());
   const [preparedPlaybackEvents, setPreparedPlaybackEvents] = useState([]);
   const [clefFilter, setClefFilter] = useState('both');
+  const [beatOnlyMode, setBeatOnlyMode] = useState(false);
 
   const audioFileUriRef = useRef(null);
   const prepareIdRef = useRef(0);
-  const renderTempoRef = useRef(120);
+  const renderTempoRef = useRef(incomingScoreData?.metadata?.tempo || 120);
   const webAudioReadyRef = useRef(false);
-  const mixDebounceRef = useRef(null);
+  const preparedScoreRef = useRef(null);
+  const fallbackWavPreparedRef = useRef(false);
   const rawNoteEventsRef = useRef([]);
   const renderedScoreRef = useRef(null);
   const lastPlaybackUiUpdateRef = useRef(0);
+  const lastVisualTimeRef = useRef(0);
+  const transportAnchorSecRef = useRef(0);
+  const transportAnchorTsRef = useRef(0);
+  const lastHighlightBucketIndexRef = useRef(0);
+  const loadingBarAnim = useRef(new Animated.Value(0)).current;
+  const currentScanIdRef = useRef(0);
+  const upperVoiceSelectionRef = useRef({ Soprano: true, Alto: true });
+  const lowerVoiceSelectionRef = useRef({ Tenor: true, Bass: true });
 
   const [voiceSelection, setVoiceSelection] = useState({
     Soprano: true,
@@ -346,13 +494,170 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
 
   const effectiveVoiceSelection = useMemo(() => {
     if (clefFilter === 'upper') {
-      return { Soprano: true, Alto: true, Tenor: false, Bass: false };
+      return {
+        Soprano: !!voiceSelection.Soprano,
+        Alto: !!voiceSelection.Alto,
+        Tenor: false,
+        Bass: false,
+      };
     }
     if (clefFilter === 'lower') {
-      return { Soprano: false, Alto: false, Tenor: true, Bass: true };
+      return {
+        Soprano: false,
+        Alto: false,
+        Tenor: !!voiceSelection.Tenor,
+        Bass: !!voiceSelection.Bass,
+      };
     }
     return voiceSelection;
   }, [voiceSelection, clefFilter]);
+
+  const playbackVoiceSelection = useMemo(() => {
+    if (!beatOnlyMode) return effectiveVoiceSelection;
+    return {
+      Soprano: false,
+      Alto: false,
+      Tenor: false,
+      Bass: false,
+    };
+  }, [beatOnlyMode, effectiveVoiceSelection]);
+
+  const allVisibleVoicesSelected = useMemo(() => {
+    if (clefFilter === 'upper') {
+      return !!voiceSelection.Soprano && !!voiceSelection.Alto;
+    }
+    if (clefFilter === 'lower') {
+      return !!voiceSelection.Tenor && !!voiceSelection.Bass;
+    }
+    return Object.values(voiceSelection).every(Boolean);
+  }, [voiceSelection, clefFilter]);
+
+  const commitVoiceSelection = useCallback((nextSelection) => {
+    setVoiceSelection(nextSelection);
+    upperVoiceSelectionRef.current = {
+      Soprano: !!nextSelection.Soprano,
+      Alto: !!nextSelection.Alto,
+    };
+    lowerVoiceSelectionRef.current = {
+      Tenor: !!nextSelection.Tenor,
+      Bass: !!nextSelection.Bass,
+    };
+  }, []);
+
+  const updateVoiceSelectionForClef = useCallback((updater) => {
+    setVoiceSelection((prev) => {
+      let next = { ...prev };
+
+      if (clefFilter === 'upper') {
+        const currentUpper = {
+          Soprano: !!prev.Soprano,
+          Alto: !!prev.Alto,
+        };
+        const updatedUpper = updater(currentUpper);
+        next = {
+          ...prev,
+          Soprano: !!updatedUpper.Soprano,
+          Alto: !!updatedUpper.Alto,
+        };
+      } else if (clefFilter === 'lower') {
+        const currentLower = {
+          Tenor: !!prev.Tenor,
+          Bass: !!prev.Bass,
+        };
+        const updatedLower = updater(currentLower);
+        next = {
+          ...prev,
+          Tenor: !!updatedLower.Tenor,
+          Bass: !!updatedLower.Bass,
+        };
+      } else {
+        next = updater({
+          Soprano: !!prev.Soprano,
+          Alto: !!prev.Alto,
+          Tenor: !!prev.Tenor,
+          Bass: !!prev.Bass,
+        });
+      }
+
+      upperVoiceSelectionRef.current = {
+        Soprano: !!next.Soprano,
+        Alto: !!next.Alto,
+      };
+      lowerVoiceSelectionRef.current = {
+        Tenor: !!next.Tenor,
+        Bass: !!next.Bass,
+      };
+
+      return next;
+    });
+  }, [clefFilter]);
+
+  const changeClefFilter = useCallback((updater) => {
+    setClefFilter((prevFilter) => {
+      const nextFilter = typeof updater === 'function' ? updater(prevFilter) : updater;
+      if (prevFilter === nextFilter) return prevFilter;
+
+      setVoiceSelection((prevSelection) => {
+        const currentUpper = {
+          Soprano: !!prevSelection.Soprano,
+          Alto: !!prevSelection.Alto,
+        };
+        const currentLower = {
+          Tenor: !!prevSelection.Tenor,
+          Bass: !!prevSelection.Bass,
+        };
+
+        if (prevFilter === 'upper') {
+          upperVoiceSelectionRef.current = currentUpper;
+        } else if (prevFilter === 'lower') {
+          lowerVoiceSelectionRef.current = currentLower;
+        } else {
+          upperVoiceSelectionRef.current = currentUpper;
+          lowerVoiceSelectionRef.current = currentLower;
+        }
+
+        if (nextFilter === 'upper') {
+          return {
+            ...prevSelection,
+            Soprano: upperVoiceSelectionRef.current.Soprano,
+            Alto: upperVoiceSelectionRef.current.Alto,
+            Tenor: false,
+            Bass: false,
+          };
+        }
+        if (nextFilter === 'lower') {
+          return {
+            ...prevSelection,
+            Soprano: false,
+            Alto: false,
+            Tenor: lowerVoiceSelectionRef.current.Tenor,
+            Bass: lowerVoiceSelectionRef.current.Bass,
+          };
+        }
+        return {
+          Soprano: upperVoiceSelectionRef.current.Soprano,
+          Alto: upperVoiceSelectionRef.current.Alto,
+          Tenor: lowerVoiceSelectionRef.current.Tenor,
+          Bass: lowerVoiceSelectionRef.current.Bass,
+        };
+      });
+
+      return nextFilter;
+    });
+  }, []);
+
+  const scanningFileName = useMemo(() => {
+    if (!imageUri) return 'Selected file';
+    try {
+      const raw = decodeURIComponent(String(imageUri).split('/').pop() || 'Selected file');
+      if (raw.length <= 30) return raw;
+      return `${raw.slice(0, 14)}...${raw.slice(-12)}`;
+    } catch (_) {
+      const raw = String(imageUri).split('/').pop() || 'Selected file';
+      if (raw.length <= 30) return raw;
+      return `${raw.slice(0, 14)}...${raw.slice(-12)}`;
+    }
+  }, [imageUri]);
 
   useEffect(() => {
     let cancelled = false;
@@ -365,8 +670,61 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
     };
   }, []);
 
+  useEffect(() => {
+    AudioPlaybackService.setBeatOnlyMode(beatOnlyMode);
+  }, [beatOnlyMode]);
+
+  useEffect(() => {
+    if (!processing) {
+      setScanProgress(0);
+      loadingBarAnim.setValue(0);
+      return;
+    }
+
+    const barAnim = Animated.timing(loadingBarAnim, {
+      toValue: scanProgress,
+      duration: 240,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: false,
+    });
+
+    barAnim.start();
+
+    return () => {
+      barAnim.stop();
+    };
+  }, [processing, scanProgress, loadingBarAnim]);
+
+  useEffect(() => {
+    if (!processing) return;
+    const t = setInterval(() => {
+      setScanProgress((prev) => {
+        if (prev >= 0.95) return prev;
+        return Math.min(0.95, prev + 0.012);
+      });
+    }, 90);
+    return () => clearInterval(t);
+  }, [processing]);
+
+  const cancelScan = useCallback(() => {
+    // Invalidate any in-flight async scan work and return control to user immediately.
+    currentScanIdRef.current += 1;
+    setProcessing(false);
+    setProcessingStage('');
+    setScoreError('Scan cancelled by user');
+  }, []);
+
+  const updateScanProgress = useCallback((next) => {
+    if (!Number.isFinite(next)) return;
+    setScanProgress((prev) => Math.max(prev, Math.min(1, next)));
+  }, []);
+
   /* ── Process score via selected OMR engine (with caching) ── */
   const processScore = useCallback(async () => {
+    const scanId = currentScanIdRef.current + 1;
+    currentScanIdRef.current = scanId;
+    const isCancelled = () => currentScanIdRef.current !== scanId;
+
     if (!imageUri) {
       setProcessing(false);
       setScoreError('No image selected');
@@ -374,6 +732,7 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
     }
     setProcessing(true);
     setScoreError(null);
+    setScanProgress(0.04);
     const selectedEngine = OMRSettings.getEngine();
 
     const ENGINE_LABELS = {
@@ -381,17 +740,42 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
     };
 
     const ENGINE_TIMEOUTS = {
-      zemsky: 180000,
+      zemsky: {
+        baseMs: 120000,
+        perMbMs: 15000,
+        maxMs: 420000,
+        stallMs: 90000,
+      },
     };
 
     const runEngine = async (engineKey, isFallback = false) => {
       const engineName = ENGINE_LABELS[engineKey] || engineKey;
-      const timeout = ENGINE_TIMEOUTS[engineKey] || 180000;
+      const timeoutCfg = ENGINE_TIMEOUTS[engineKey] || {
+        baseMs: 120000,
+        perMbMs: 10000,
+        maxMs: 360000,
+        stallMs: 90000,
+      };
+
+      const imageBytes = (() => {
+        try {
+          const f = new File(imageUri);
+          return Number.isFinite(f.size) ? f.size : 0;
+        } catch (_) {
+          return 0;
+        }
+      })();
+      const imageMb = imageBytes > 0 ? imageBytes / (1024 * 1024) : 0;
+      const hardTimeoutMs = Math.min(
+        timeoutCfg.maxMs,
+        timeoutCfg.baseMs + Math.round(imageMb * timeoutCfg.perMbMs)
+      );
+      const stallTimeoutMs = timeoutCfg.stallMs;
 
       if (isFallback) {
         setProcessingStage(`Primary engine failed. Trying ${engineName}...`);
       } else {
-        setProcessingStage(`Starting ${engineName} analysis...`);
+        setProcessingStage(`Starting ${engineName}...`);
       }
 
       let service;
@@ -404,12 +788,76 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
         service = OMRSettings.getService();
       }
 
-      const result = await Promise.race([
-        service.processSheet(imageUri, (stage) => setProcessingStage(stage)),
-        new Promise((_, rej) => setTimeout(() => rej(new Error(
-          `${engineName} timed out after ${Math.round(timeout / 1000)}s`
-        )), timeout)),
-      ]);
+      // Fail fast if harness/server is not reachable to avoid a long "infinite" loader feel.
+      if (typeof service?.checkHealth === 'function') {
+        const health = await service.checkHealth();
+        if (isCancelled()) throw new Error('Scan cancelled');
+        if (!health?.ok) {
+          throw new Error(health?.message || `${engineName} is unreachable`);
+        }
+      }
+
+      let watchdog = null;
+      let lastActivityAt = Date.now();
+      const startedAt = Date.now();
+
+      const reportProgressStage = (stage) => {
+        if (isCancelled()) return;
+        lastActivityAt = Date.now();
+
+        const raw = String(stage || '');
+        const lower = raw.toLowerCase();
+        let displayStage = raw;
+
+        if (lower.includes('processing') || lower.includes('starting')) {
+          displayStage = 'Loading image data...';
+        } else if (lower.includes('staff')) {
+          displayStage = '🎼 Detecting staff lines...';
+        } else if (lower.includes('symbol') || lower.includes('detect')) {
+          displayStage = '📍 Classifying notes & symbols...';
+        } else if (lower.includes('note')) {
+          displayStage = '🎵 Extracting note values...';
+        } else if (lower.includes('musicxml') || lower.includes('building')) {
+          displayStage = '✓ Building MusicXML...';
+        }
+        setProcessingStage(displayStage);
+      };
+
+      const watchdogPromise = new Promise((_, rej) => {
+        watchdog = setInterval(() => {
+          if (isCancelled()) {
+            rej(new Error('Scan cancelled'));
+            return;
+          }
+          const now = Date.now();
+          const totalElapsed = now - startedAt;
+          const idleElapsed = now - lastActivityAt;
+
+          if (idleElapsed > stallTimeoutMs) {
+            rej(new Error(
+              `${engineName} appears stalled (no progress for ${Math.round(stallTimeoutMs / 1000)}s)`
+            ));
+            return;
+          }
+
+          if (totalElapsed > hardTimeoutMs) {
+            rej(new Error(
+              `${engineName} timed out after ${Math.round(hardTimeoutMs / 1000)}s`
+            ));
+          }
+        }, 1000);
+      });
+
+      let result;
+      try {
+        result = await Promise.race([
+          service.processSheet(imageUri, reportProgressStage),
+          watchdogPromise,
+        ]);
+        if (isCancelled()) throw new Error('Scan cancelled');
+      } finally {
+        if (watchdog) clearInterval(watchdog);
+      }
 
       const totalEvents = result.notes?.length || 0;
       const noteCount = result.notes?.filter((n) => n.type === 'note').length || 0;
@@ -419,30 +867,43 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
     };
 
     // ── Check cache first ──
+    const CACHE_LOOKUP_TIMEOUT_MS = 5000;
+    let skipCacheForThisRun = false;
     setProcessingStage('Checking cache...');
     try {
-      const cached = await OMRCacheService.get(imageUri, selectedEngine);
+      const cached = await Promise.race([
+        OMRCacheService.get(imageUri, selectedEngine),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('Cache lookup timed out')), CACHE_LOOKUP_TIMEOUT_MS)),
+      ]);
+      if (isCancelled()) return;
       if (cached && cached.notes && cached.notes.length > 0) {
         const cachedEngineName = ENGINE_LABELS[selectedEngine] || selectedEngine;
         const cachedNotes = cached.notes.filter((n) => n.type === 'note').length;
         const cachedRests = cached.notes.filter((n) => n.type === 'rest').length;
         console.log(`🗂️ Cache hit — ${cachedNotes} notes, ${cachedRests} rests (${cached.notes.length} events), skipping ${cachedEngineName}`);
         setScoreData(cached);
+        setScanProgress(1);
         setProcessing(false);
         setProcessingStage('');
         return;
       }
     } catch (e) {
-      console.warn('Cache lookup failed, proceeding with OMR:', e.message);
+      console.warn('Cache lookup failed or stalled, proceeding with OMR:', e.message);
+      skipCacheForThisRun = true;
+      setProcessingStage('Cache slow. Continuing scan...');
     }
 
     // ── No cache — run OMR engine ──
     try {
       let run = await runEngine(selectedEngine, false);
+      if (isCancelled()) return;
 
       if (!run.result?.notes || run.result.notes.length === 0) {
         throw new Error(`${run.engineName} could not detect any notes`);
       }
+
+      setProcessingStage('✓ Finalizing score...');
+      updateScanProgress(1);
 
       const detectedTempo = Number(run.result?.metadata?.tempo);
       if (Number.isFinite(detectedTempo) && detectedTempo >= 40 && detectedTempo <= 240) {
@@ -451,18 +912,30 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
       }
 
       setScoreData(run.result);
-      OMRCacheService.set(imageUri, run.engineKey, run.result).catch(() => {});
+      if (!skipCacheForThisRun) {
+        OMRCacheService.set(imageUri, run.engineKey, run.result).catch(() => {});
+      }
     } catch (e) {
+      if ((e?.message || '') === 'Scan cancelled') {
+        return;
+      }
       console.warn(`Primary engine (${selectedEngine}) failed:`, e?.message || e);
       setScoreError(e?.message || 'Failed to process music sheet');
     } finally {
+      if (isCancelled()) return;
+      // Let users see the bar complete before switching away from the loading UI.
+      setScanProgress(1);
+      await new Promise((resolve) => setTimeout(resolve, 260));
       setProcessing(false);
       setProcessingStage('');
     }
-  }, [imageUri]);
+  }, [imageUri, updateScanProgress]);
 
   useEffect(() => {
-    processScore();
+    // Only process image if imageUri is provided; skip if scoreData was already loaded
+    if (imageUri && !incomingScoreData) {
+      processScore();
+    }
     // Load SoundFont for high-quality playback (non-blocking)
     AudioPlaybackService.loadSoundFont(
       require('../../assets/SheetMusicScanner.sf2')
@@ -473,7 +946,7 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
         setSelectedPresetIndex(0);
       }
     });
-  }, [processScore]);
+  }, [processScore, imageUri, incomingScoreData]);
 
   useEffect(() => {
     if (scoreViewMode !== 'rendered') return;
@@ -490,6 +963,11 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
   useEffect(() => {
     if (!scoreData) return;
     let cancelled = false;
+
+    if (preparedScoreRef.current !== scoreData) {
+      preparedScoreRef.current = scoreData;
+      fallbackWavPreparedRef.current = false;
+    }
 
     AudioPlaybackService.initAudio();
 
@@ -511,6 +989,7 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
         // Prepare playback note events through the service path.
         const evtResult = AudioPlaybackService.prepareNoteEvents(playbackNotes, {
           timelineMode: AUDIO_TIMELINE_MODE,
+          measureBeats: scoreData?.metadata?.measureBeats,
         });
         rawNoteEventsRef.current = Array.isArray(evtResult?.noteEvents) ? evtResult.noteEvents : [];
         setPreparedPlaybackEvents(rawNoteEventsRef.current);
@@ -532,15 +1011,31 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
           setPlaybackTime(0);
           console.log(`✅ Web Audio ready [${myId}]: ${dur.toFixed(1)}s, ${evtResult.noteEvents.length} events`);
         } else {
-          // Clean pipeline only: beatOffset-based pre-render must be available.
+          // Legacy WAV path: render once per loaded score for basic fallback playback.
+          // UI interactions (voice/tempo/preset changes) should not regenerate WAV.
           webAudioReadyRef.current = false;
           AudioPlaybackService._useWebAudio = false;
-          const result = await AudioPlaybackService.preRenderVoiceTracks(playbackNotes, tempo);
-          if (cancelled || myId !== prepareIdRef.current) return;
-          if (result) {
-            await doMix(myId);
+          if (!fallbackWavPreparedRef.current) {
+            const result = await AudioPlaybackService.preRenderVoiceTracks(playbackNotes, tempo, {
+              measureBeats: scoreData?.metadata?.measureBeats,
+            });
+            if (cancelled || myId !== prepareIdRef.current) return;
+            if (result) {
+              fallbackWavPreparedRef.current = true;
+              await doMix(myId);
+            } else {
+              throw new Error('Clean pipeline requires beatOffset timing data; legacy prepare fallback is disabled.');
+            }
           } else {
-            throw new Error('Clean pipeline requires beatOffset timing data; legacy prepare fallback is disabled.');
+            const fallbackBeats = rawNoteEventsRef.current.reduce(
+              (mx, e) => Math.max(mx, (e.beatOffset || 0) + (e.durationBeats || 0)),
+              0
+            );
+            if (fallbackBeats > 0) {
+              setTotalDuration(fallbackBeats * (60 / tempo));
+            }
+            setPlaybackTime(0);
+            await doMix(myId);
           }
         }
       } catch (e) {
@@ -556,40 +1051,23 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
     doPrepare();
 
     return () => { cancelled = true; };
-  }, [scoreData, selectedPresetIndex]);
+  }, [scoreData, selectedPresetIndex, effectiveVoiceSelection]);
 
   /* ── Phase 2: Voice selection changes ── */
-  /* Web Audio: no re-render needed, voice filtering is at play-time.          */
-  /* Legacy:   re-mix pre-rendered voice buffers.                              */
+  /* Web Audio: voice selection is applied at play-time.                        */
+  /* Legacy WAV fallback: do not regenerate from UI interaction.                */
   useEffect(() => {
     if (!scoreData) return;
     if (webAudioReadyRef.current) {
       // Web Audio path: voice selection is applied at play time, nothing to do
       // If currently playing, reschedule with new voice selection
       if (AudioPlaybackService.isPlaying) {
-        AudioPlaybackService.changeTempo(tempo, effectiveVoiceSelection);
+        AudioPlaybackService.changeTempo(tempo, playbackVoiceSelection);
       }
-      return;
-    }
-    if (!AudioPlaybackService.hasPreRenderedTracks()) return;
-
-    // Debounce legacy mix — wait 300ms after last toggle before re-mixing
-    if (mixDebounceRef.current) clearTimeout(mixDebounceRef.current);
-
-    mixDebounceRef.current = setTimeout(() => {
-      const myId = ++prepareIdRef.current;
-
-      AudioPlaybackService.stop();
-      setIsPlaying(false);
-      setIsPaused(false);
-
-      doMix(myId);
-    }, 150);
-
-    return () => {
-      if (mixDebounceRef.current) clearTimeout(mixDebounceRef.current);
+    } else if (AudioPlaybackService.isPlaying) {
+      console.log('ℹ️ Voice selection changed during WAV playback; changes apply on next play session.');
     };
-  }, [effectiveVoiceSelection]);
+  }, [playbackVoiceSelection, tempo]);
 
   /** Mix pre-rendered voice buffers into a single WAV based on effective voice selection */
   const doMix = async (myId) => {
@@ -602,7 +1080,7 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
       console.log(`🎵 mix [${myId}]: voices=${activeVoices.join(',')}`);
 
       const { fileUri, timingMap, totalDuration: dur } =
-        await AudioPlaybackService.mixVoiceTracks(effectiveVoiceSelection);
+        await AudioPlaybackService.mixVoiceTracks(playbackVoiceSelection);
 
       if (myId !== prepareIdRef.current) {
         console.log(`🎵 mix [${myId}]: stale, abandoning`);
@@ -645,7 +1123,7 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
 
     if (webAudioReadyRef.current) {
       // Web Audio path: instant tempo change (just reschedule events)
-      const result = AudioPlaybackService.changeTempo(newTempo, effectiveVoiceSelection);
+      const result = AudioPlaybackService.changeTempo(newTempo, playbackVoiceSelection);
       if (result) {
         setTotalDuration(result.totalDuration);
         setPitchTimeline(
@@ -659,39 +1137,43 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
       return;
     }
 
-    // Non-WebAudio path: regenerate pre-rendered audio at the new tempo.
-    const myId = ++prepareIdRef.current;
-    await AudioPlaybackService.stop();
-    setIsPlaying(false);
-    setIsPaused(false);
-
-    setPreparing(true);
-    try {
-      setPitchTimeline(
-        ENABLE_PITCH_VIEW
-          ? buildPitchTimelineFromRawEvents(rawNoteEventsRef.current, newTempo)
-          : []
-      );
-      const playbackNotes = getLiteralPlaybackNotes(scoreData);
-      const result = await AudioPlaybackService.preRenderVoiceTracks(playbackNotes, newTempo);
-      if (myId !== prepareIdRef.current) return;
-      if (!result) {
-        throw new Error('Clean pipeline requires beatOffset timing data; legacy tempo fallback is disabled.');
-      }
-      await doMix(myId);
-      console.log(`✅ Tempo re-render: ${newTempo} BPM`);
-    } catch (e) {
-      console.warn('Tempo re-render error:', e);
-      if (myId === prepareIdRef.current) setPreparing(false);
+    // Legacy WAV fallback: do not regenerate from tempo slider changes.
+    // Keep UI timeline consistent and stop active fallback playback to avoid mismatch.
+    if (isPlaying || isPaused) {
+      await AudioPlaybackService.stop();
+      setIsPlaying(false);
+      setIsPaused(false);
     }
+
+    const fallbackBeats = rawNoteEventsRef.current.reduce(
+      (mx, e) => Math.max(mx, (e.beatOffset || 0) + (e.durationBeats || 0)),
+      0
+    );
+    if (fallbackBeats > 0) {
+      setTotalDuration(fallbackBeats * (60 / newTempo));
+    }
+    setPitchTimeline(
+      ENABLE_PITCH_VIEW
+        ? buildPitchTimelineFromRawEvents(rawNoteEventsRef.current, newTempo)
+        : []
+    );
+    setPlaybackTime(0);
+    console.log(`ℹ️ Tempo changed to ${newTempo} BPM without WAV regeneration (export-only WAV mode)`);
   };
 
   /* ── Playback controls ── */
   const handlePlay = async () => {
     if (preparing) return;
+    AudioPlaybackService.setBeatOnlyMode(beatOnlyMode);
+    AudioPlaybackService.setExternalBeatGuideOnsets(sharedBeatOffsetsForAudio, {
+      measureBeats: scoreData?.metadata?.measureBeats,
+      totalBeats: canonicalTotalBeats,
+    });
 
     if (isPaused) {
-      await AudioPlaybackService.resume(effectiveVoiceSelection);
+      transportAnchorSecRef.current = playbackTime;
+      transportAnchorTsRef.current = Date.now();
+      await AudioPlaybackService.resume(playbackVoiceSelection);
       setIsPlaying(true);
       setIsPaused(false);
       return;
@@ -701,19 +1183,22 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
     setIsPaused(false);
     setPlaybackTime(0);
     lastPlaybackUiUpdateRef.current = 0;
+    lastVisualTimeRef.current = 0;
+    lastHighlightBucketIndexRef.current = 0;
+    transportAnchorSecRef.current = 0;
+    transportAnchorTsRef.current = Date.now();
     renderedScoreRef.current?.resetPlayback?.();
 
     if (webAudioReadyRef.current) {
       // Web Audio path: schedule all notes, no file needed
       console.log(`▶️ handlePlay: Web Audio at ${tempo} BPM`);
-      AudioPlaybackService._onPositionUpdate = (timeSec) => updatePlaybackPosition(timeSec);
       AudioPlaybackService._onFinished = () => {
         setIsPlaying(false);
         setIsPaused(false);
         updatePlaybackPosition(totalDuration, true);
       };
-      AudioPlaybackService.playWebAudio(tempo, effectiveVoiceSelection,
-        (timeSec) => updatePlaybackPosition(timeSec),
+      AudioPlaybackService.playWebAudio(tempo, playbackVoiceSelection,
+        null,
         () => { setIsPlaying(false); setIsPaused(false); updatePlaybackPosition(totalDuration, true); }
       );
       return;
@@ -731,7 +1216,13 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
     try {
       await AudioPlaybackService.play(
         fileUri,
-        (timeSec) => updatePlaybackPosition(timeSec),
+        (timeSec) => {
+          if (!Number.isFinite(timeSec)) return;
+          const next = Math.max(0, timeSec);
+          if (next + 0.06 < transportAnchorSecRef.current) return;
+          transportAnchorSecRef.current = Math.max(transportAnchorSecRef.current, next);
+          transportAnchorTsRef.current = Date.now();
+        },
         () => { setIsPlaying(false); setIsPaused(false); updatePlaybackPosition(totalDuration, true); }
       );
     } catch (e) {
@@ -742,6 +1233,8 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
 
   const handlePause = async () => {
     await AudioPlaybackService.pause();
+    transportAnchorSecRef.current = playbackTime;
+    transportAnchorTsRef.current = Date.now();
     setIsPlaying(false);
     setIsPaused(true);
   };
@@ -751,19 +1244,60 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
     setIsPlaying(false);
     setIsPaused(false);
     setPlaybackTime(0);
+    lastVisualTimeRef.current = 0;
+    lastHighlightBucketIndexRef.current = 0;
+    transportAnchorSecRef.current = 0;
+    transportAnchorTsRef.current = 0;
     renderedScoreRef.current?.resetPlayback?.();
   };
 
+  const toggleBeatOnlyMode = async () => {
+    const next = !beatOnlyMode;
+    AudioPlaybackService.setBeatOnlyMode(next);
+    setBeatOnlyMode(next);
+
+    // Restart transport state so verification always begins cleanly.
+    await AudioPlaybackService.stop();
+    setIsPlaying(false);
+    setIsPaused(false);
+    setPlaybackTime(0);
+    lastVisualTimeRef.current = 0;
+    lastHighlightBucketIndexRef.current = 0;
+    transportAnchorSecRef.current = 0;
+    transportAnchorTsRef.current = 0;
+    renderedScoreRef.current?.resetPlayback?.();
+
+    // WAV fallback needs a remixed file to reflect Beat Only mode.
+    if (!webAudioReadyRef.current && scoreData) {
+      const myId = ++prepareIdRef.current;
+      await doMix(myId);
+    }
+  };
+
   const handleSeek = async (timeSec) => {
+    AudioPlaybackService.setExternalBeatGuideOnsets(sharedBeatOffsetsForAudio, {
+      measureBeats: scoreData?.metadata?.measureBeats,
+      totalBeats: canonicalTotalBeats,
+    });
     const clamped = Math.max(0, Math.min(timeSec, totalDuration));
+    transportAnchorSecRef.current = clamped;
+    transportAnchorTsRef.current = Date.now();
+    const renderedTotal = canonicalTotalDuration > 0 ? canonicalTotalDuration : totalDuration;
+    const seekVisualLead = RENDER_VISUAL_LEAD_MS / 1000;
+    lastVisualTimeRef.current = Math.max(
+      0,
+      Math.min(clamped + seekVisualLead, renderedTotal > 0 ? renderedTotal : clamped + seekVisualLead)
+    );
+    lastHighlightBucketIndexRef.current = 0;
     setPlaybackTime(clamped);
+
     if (canonicalTimeline && Number.isFinite(canonicalTimeline.totalBeats) && canonicalTimeline.totalBeats > 0) {
       const beat = canonicalTimeline.timeToBeat(clamped, tempo);
       renderedScoreRef.current?.syncBeat?.(beat, canonicalTimeline.totalBeats);
     } else {
       renderedScoreRef.current?.syncPlayback?.(clamped, totalDuration);
     }
-    await AudioPlaybackService.seekTo(clamped, effectiveVoiceSelection);
+    await AudioPlaybackService.seekTo(clamped, playbackVoiceSelection);
   };
 
   const toggleVoice = (voice) => {
@@ -774,7 +1308,7 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
       setIsPaused(false);
       setPlaybackTime(0);
     }
-    setVoiceSelection((prev) => {
+    updateVoiceSelectionForClef((prev) => {
       const next = { ...prev, [voice]: !prev[voice] };
       if (!Object.values(next).some(Boolean)) {
         Alert.alert('Select Voice', 'At least one voice must be selected');
@@ -792,7 +1326,7 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
       setIsPaused(false);
       setPlaybackTime(0);
     }
-    setVoiceSelection((prev) => {
+    updateVoiceSelectionForClef((prev) => {
       const activeCount = Object.values(prev).filter(Boolean).length;
       const onlyThisActive = prev[voice] && activeCount === 1;
 
@@ -820,7 +1354,8 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
       setIsPaused(false);
       setPlaybackTime(0);
     }
-    setVoiceSelection({ Soprano: true, Alto: true, Tenor: true, Bass: true });
+    setClefFilter('both');
+    commitVoiceSelection({ Soprano: true, Alto: true, Tenor: true, Bass: true });
   };
 
   /* ── Instrument selection ── */
@@ -866,6 +1401,51 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
     }
   };
 
+  const handleExportWav = async () => {
+    if (!scoreData?.notes?.length) {
+      Alert.alert('No score data', 'No notes detected for WAV export. Please rescan the score.');
+      return;
+    }
+
+    const playbackNotes = getLiteralPlaybackNotes(scoreData);
+
+    try {
+      setPreparing(true);
+      await AudioPlaybackService.stop();
+      setIsPlaying(false);
+      setIsPaused(false);
+
+      const preRender = await AudioPlaybackService.preRenderVoiceTracks(playbackNotes, tempo, {
+        measureBeats: scoreData?.metadata?.measureBeats,
+      });
+      if (!preRender) {
+        throw new Error('Cannot export WAV because beatOffset timing data is unavailable.');
+      }
+
+      const { fileUri } = await AudioPlaybackService.mixVoiceTracks(effectiveVoiceSelection);
+      if (!fileUri) {
+        throw new Error('WAV export failed to produce an output file.');
+      }
+
+      const canShare = await Sharing.isAvailableAsync();
+      if (!canShare) {
+        Alert.alert('Exported', `Saved WAV to: ${fileUri}`);
+        return;
+      }
+
+      await Sharing.shareAsync(fileUri, {
+        mimeType: 'audio/wav',
+        dialogTitle: 'Export WAV',
+        UTI: 'com.microsoft.waveform-audio',
+      });
+    } catch (e) {
+      console.error('WAV export failed:', e);
+      Alert.alert('Export failed', e?.message || 'Could not export WAV file.');
+    } finally {
+      setPreparing(false);
+    }
+  };
+
   const currentInstrumentName = availablePresets[selectedPresetIndex]?.name || 'Piano';
   const canonicalTimeline = useMemo(() => {
     if (!scoreData) return null;
@@ -886,34 +1466,151 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
     if (!canonicalTimeline) return 0;
     return Number.isFinite(canonicalTimeline.totalBeats) ? canonicalTimeline.totalBeats : 0;
   }, [canonicalTimeline]);
+  const sharedBeatOffsets = useMemo(() => {
+    if (!Array.isArray(musicXmlHighlightTimeline) || musicXmlHighlightTimeline.length === 0) return [];
+    const offsets = musicXmlHighlightTimeline
+      .filter((entry) => Number.isFinite(entry?.beatOffset) && isVoiceAllowed(effectiveVoiceSelection, entry.voice))
+      .map((entry) => entry.beatOffset);
+    if (offsets.length === 0) return [];
+    return [...new Set(offsets)].sort((a, b) => a - b);
+  }, [musicXmlHighlightTimeline, effectiveVoiceSelection]);
+  const highlightBuckets = useMemo(() => {
+    if (!Array.isArray(musicXmlHighlightTimeline) || musicXmlHighlightTimeline.length === 0) return [];
 
-  const updatePlaybackPosition = useCallback((timeSec, force = false) => {
-    const clamped = Math.max(0, Math.min(timeSec, totalDuration || timeSec || 0));
-    const renderedTotal = canonicalTotalDuration > 0 ? canonicalTotalDuration : totalDuration;
-    const canonicalBeatForRender = canonicalTimeline
-      ? canonicalTimeline.timeToBeat(clamped, tempo)
-      : 0;
-    const onsetProgress = canonicalTotalBeats > 0
-      ? Math.max(0, Math.min(1, canonicalBeatForRender / canonicalTotalBeats))
-      : NaN;
-    const activeHighlightIds = getActiveHighlightIds(musicXmlHighlightTimeline, clamped, effectiveVoiceSelection);
+    const normalizeBeat = (beat) => {
+      if (!Number.isFinite(beat)) return NaN;
+      return Math.round(beat * 1000000) / 1000000;
+    };
 
-    if (renderedScoreRef.current?.syncActiveNoteIds) {
-      renderedScoreRef.current.syncActiveNoteIds(activeHighlightIds, clamped);
+    const filtered = musicXmlHighlightTimeline
+      .filter((entry) => entry?.elementId && Number.isFinite(entry?.beatOffset) && isVoiceAllowed(effectiveVoiceSelection, entry.voice))
+      .sort((a, b) => a.beatOffset - b.beatOffset);
+    if (filtered.length === 0) return [];
+
+    const beatToIds = new Map();
+    for (const entry of filtered) {
+      const beat = normalizeBeat(entry.beatOffset);
+      if (!Number.isFinite(beat)) continue;
+      const ids = beatToIds.get(beat) || [];
+      if (!ids.includes(entry.elementId)) {
+        ids.push(entry.elementId);
+        beatToIds.set(beat, ids);
+      }
     }
 
-    if (renderedScoreRef.current?.syncBeat && canonicalTotalBeats > 0) {
-      renderedScoreRef.current.syncBeat(canonicalBeatForRender, canonicalTotalBeats);
-    } else if (renderedScoreRef.current?.syncPlayback && renderedTotal > 0) {
-      renderedScoreRef.current.syncPlayback(clamped, renderedTotal);
+    const beats = sharedBeatOffsets.length > 0
+      ? sharedBeatOffsets.map(normalizeBeat).filter((b) => Number.isFinite(b) && beatToIds.has(b))
+      : [...beatToIds.keys()].sort((a, b) => a - b);
+
+    return beats.map((beatOffset) => ({ beatOffset, elementIds: beatToIds.get(beatOffset) || [] }));
+  }, [musicXmlHighlightTimeline, effectiveVoiceSelection, sharedBeatOffsets]);
+  const sharedBeatOffsetsForAudio = useMemo(
+    () => highlightBuckets.map((bucket) => bucket.beatOffset),
+    [highlightBuckets]
+  );
+
+  useEffect(() => {
+    AudioPlaybackService.setExternalBeatGuideOnsets(sharedBeatOffsetsForAudio, {
+      measureBeats: scoreData?.metadata?.measureBeats,
+      totalBeats: canonicalTotalBeats,
+    });
+  }, [sharedBeatOffsetsForAudio, scoreData, canonicalTotalBeats]);
+
+  const updatePlaybackPosition = useCallback((timeSec, force = false) => {
+    const audioTotal = totalDuration || timeSec || 0;
+    const clamped = Math.max(0, Math.min(timeSec, audioTotal));
+    const renderedTotal = canonicalTotalDuration > 0 ? canonicalTotalDuration : totalDuration;
+    const atAudioEnd = audioTotal > 0 && clamped >= audioTotal - 0.02;
+    const renderBaseTime =
+      force && atAudioEnd && renderedTotal > 0
+        ? renderedTotal
+        : Math.max(0, Math.min(timeSec, renderedTotal || timeSec || 0));
+    const visualLeadSec = RENDER_VISUAL_LEAD_MS / 1000;
+    const visualTimeSecRaw = Math.max(
+      0,
+      Math.min(
+        renderBaseTime + visualLeadSec,
+        renderedTotal > 0 ? renderedTotal : (renderBaseTime + visualLeadSec)
+      )
+    );
+    const visualTimeSec = force
+      ? visualTimeSecRaw
+      : Math.max(visualTimeSecRaw, lastVisualTimeRef.current);
+    lastVisualTimeRef.current = visualTimeSec;
+    const secondsPerBeat = 60 / tempo;
+    const transportBeat = clamped / secondsPerBeat;
+    const canonicalBeatForRender = canonicalTimeline
+      ? canonicalTimeline.timeToBeat(visualTimeSec, tempo)
+      : 0;
+    let activeHighlightIds = [];
+    if (highlightBuckets.length > 0) {
+      const EPS = 0.001;
+      let idx = Math.max(0, Math.min(lastHighlightBucketIndexRef.current, highlightBuckets.length - 1));
+
+      if (force) {
+        idx = highlightBuckets.length - 1;
+      } else {
+        while (idx + 1 < highlightBuckets.length && highlightBuckets[idx + 1].beatOffset <= transportBeat + EPS) {
+          idx += 1;
+        }
+      }
+
+      lastHighlightBucketIndexRef.current = idx;
+      activeHighlightIds = highlightBuckets[idx]?.elementIds || [];
+    }
+
+    if (renderedScoreRef.current?.syncActiveNoteIds) {
+      renderedScoreRef.current.syncActiveNoteIds(activeHighlightIds, visualTimeSec);
+    }
+
+    if (!isPlaying) {
+      if (renderedScoreRef.current?.syncBeat && canonicalTotalBeats > 0) {
+        renderedScoreRef.current.syncBeat(canonicalBeatForRender, canonicalTotalBeats);
+      } else if (renderedScoreRef.current?.syncPlayback && renderedTotal > 0) {
+        renderedScoreRef.current.syncPlayback(visualTimeSec, renderedTotal);
+      }
     }
 
     const now = Date.now();
-    if (force || now - lastPlaybackUiUpdateRef.current >= 50) {
+    if (force || now - lastPlaybackUiUpdateRef.current >= PLAYBACK_UI_UPDATE_MS) {
       lastPlaybackUiUpdateRef.current = now;
       setPlaybackTime(clamped);
     }
-  }, [totalDuration, canonicalTotalDuration, canonicalTimeline, tempo, canonicalTotalBeats, musicXmlHighlightTimeline, effectiveVoiceSelection]);
+  }, [totalDuration, canonicalTotalDuration, canonicalTimeline, tempo, canonicalTotalBeats, highlightBuckets, isPlaying]);
+
+  useEffect(() => {
+    if (!isPlaying) return;
+    let frame = null;
+
+    const tick = () => {
+      if (!AudioPlaybackService.isPlaying) {
+        frame = requestAnimationFrame(tick);
+        return;
+      }
+
+      let timeSec = 0;
+      if (webAudioReadyRef.current) {
+        timeSec = AudioPlaybackService.getPlaybackPositionSec();
+      } else {
+        const base = transportAnchorSecRef.current;
+        const anchorTs = transportAnchorTsRef.current;
+        const dtSec = anchorTs > 0
+          ? Math.min(0.35, Math.max(0, (Date.now() - anchorTs) / 1000))
+          : 0;
+        timeSec = base + dtSec;
+      }
+
+      if (Number.isFinite(timeSec)) {
+        updatePlaybackPosition(timeSec);
+      }
+      frame = requestAnimationFrame(tick);
+    };
+
+    frame = requestAnimationFrame(tick);
+    return () => {
+      if (frame != null) cancelAnimationFrame(frame);
+    };
+  }, [isPlaying, updatePlaybackPosition]);
 
   // Compute current beat from canonical MusicXML timeline for UI components.
   const currentBeat = canonicalTimeline
@@ -927,17 +1624,37 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
 
   /* ── Render ── */
   if (processing) {
+    const barWidth = loadingBarAnim.interpolate({
+      inputRange: [0, 1],
+      outputRange: [0, 188],
+    });
+
     return (
       <View style={styles.centerContainer}>
         <StatusBar barStyle="dark-content" backgroundColor={palette.background} />
-        <ActivityIndicator size="large" color={palette.ink} />
-        <Text style={styles.loadingText}>Analyzing score...</Text>
-        {processingStage ? (
-          <Text style={styles.stageText}>{processingStage}</Text>
-        ) : null}
-        <Text style={styles.hintText}>
-          Sending image to server for recognition
-        </Text>
+        <View style={styles.loadingLogoWrap}>
+          <WebView
+            originWhitelist={["*"]}
+            source={{ html: loadingEyeHtml }}
+            style={styles.loadingLogoWebView}
+            scrollEnabled={false}
+            showsHorizontalScrollIndicator={false}
+            showsVerticalScrollIndicator={false}
+          />
+        </View>
+
+        <Text style={styles.scanningText}>Scanning...</Text>
+        <Text style={styles.scanningFileText}>{scanningFileName}</Text>
+        {processingStage && (
+          <Text style={styles.processingStageText}>{processingStage}</Text>
+        )}
+
+        <View style={styles.loadingBarTrack}>
+          <Animated.View style={[styles.loadingBarPulse, { width: barWidth }]} />
+        </View>
+        <TouchableOpacity style={styles.cancelScanButton} onPress={cancelScan}>
+          <Text style={styles.cancelScanButtonText}>Cancel Scan</Text>
+        </TouchableOpacity>
       </View>
     );
   }
@@ -1126,6 +1843,19 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
             <Text style={styles.pillText}>{tempo} BPM</Text>
           </Pressable>
 
+          {/* Temporary beat-only verifier */}
+          <Pressable
+            style={({ pressed }) => [
+              styles.zoomPill,
+              beatOnlyMode && { borderColor: barPalette.accent },
+              pressed && styles.pressedPill,
+            ]}
+            onPress={toggleBeatOnlyMode}
+          >
+            <Feather name={beatOnlyMode ? 'radio' : 'circle'} size={12} color={barPalette.barTextMuted} />
+            <Text style={styles.pillText}>{beatOnlyMode ? 'Beat Only On' : 'Beat Only'}</Text>
+          </Pressable>
+
           {/* Export MusicXML */}
           <Pressable
             style={({ pressed }) => [styles.zoomPill, pressed && styles.pressedPill]}
@@ -1133,6 +1863,14 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
           >
             <Feather name="download" size={12} color={barPalette.barTextMuted} />
             <Text style={styles.pillText}>Export XML</Text>
+          </Pressable>
+
+          <Pressable
+            style={({ pressed }) => [styles.zoomPill, pressed && styles.pressedPill]}
+            onPress={handleExportWav}
+          >
+            <Feather name="music" size={12} color={barPalette.barTextMuted} />
+            <Text style={styles.pillText}>Export WAV</Text>
           </Pressable>
 
           {scoreViewMode === 'rendered' && (
@@ -1180,26 +1918,29 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
             </Pressable>
           )}
 
-          {/* Clef filter */}
+          {/* Clef filters */}
           <Pressable
             style={({ pressed }) => [
               styles.zoomPill,
               pressed && styles.pressedPill,
-              clefFilter !== 'both' && { borderColor: barPalette.accent },
+              clefFilter === 'upper' && { borderColor: barPalette.accent },
             ]}
-            onPress={() => setClefFilter((mode) => {
-              const idx = CLEF_FILTERS.indexOf(mode);
-              return CLEF_FILTERS[(idx + 1) % CLEF_FILTERS.length];
-            })}
+            onPress={() => changeClefFilter('upper')}
           >
-            <Feather
-              name={clefFilter === 'upper' ? 'arrow-up' : clefFilter === 'lower' ? 'arrow-down' : 'align-center'}
-              size={12}
-              color={barPalette.barTextMuted}
-            />
-            <Text style={styles.pillText}>
-              {clefFilter === 'upper' ? 'Upper Clef' : clefFilter === 'lower' ? 'Lower Clef' : 'Both Clefs'}
-            </Text>
+            <Feather name="arrow-up" size={12} color={barPalette.barTextMuted} />
+            <Text style={styles.pillText}>Upper Clef</Text>
+          </Pressable>
+
+          <Pressable
+            style={({ pressed }) => [
+              styles.zoomPill,
+              pressed && styles.pressedPill,
+              clefFilter === 'lower' && { borderColor: barPalette.accent },
+            ]}
+            onPress={() => changeClefFilter('lower')}
+          >
+            <Feather name="arrow-down" size={12} color={barPalette.barTextMuted} />
+            <Text style={styles.pillText}>Lower Clef</Text>
           </Pressable>
 
           {/* Score view mode */}
@@ -1227,19 +1968,17 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
             <Pressable
               style={({ pressed }) => [
                 styles.voiceDot,
-                Object.values(effectiveVoiceSelection).every(Boolean)
+                  allVisibleVoicesSelected
                   ? styles.voiceDotAll
                   : styles.voiceDotInactive,
                 pressed && styles.pressedDot,
-                clefFilter !== 'both' && { opacity: 0.6 },
               ]}
               onPress={allVoicesOn}
-              disabled={clefFilter !== 'both'}
             >
               <Text
                 style={[
                   styles.voiceDotText,
-                  Object.values(effectiveVoiceSelection).every(Boolean)
+                    allVisibleVoicesSelected
                     ? styles.voiceDotTextActive
                     : styles.voiceDotTextInactive,
                 ]}
@@ -1264,11 +2003,10 @@ export const PlaybackScreen = ({ imageUri, onNavigateBack }) => {
                       ? styles.voiceDotActive
                       : styles.voiceDotInactive,
                   pressed && !isEmpty && styles.pressedDot,
-                  clefFilter !== 'both' && { opacity: 0.6 },
                 ]}
                 onPress={() => isEmpty ? null : soloVoice(voice)}
                 onLongPress={() => isEmpty ? null : toggleVoice(voice)}
-                disabled={isEmpty || clefFilter !== 'both'}
+                disabled={isEmpty}
               >
                 <Text
                   style={[
@@ -1385,9 +2123,67 @@ const styles = StyleSheet.create({
     padding: 24,
     backgroundColor: palette.background,
   },
-  loadingText: { marginTop: 16, fontSize: 15, color: palette.inkMuted, fontWeight: '600' },
-  stageText: { marginTop: 8, fontSize: 13, color: barPalette.accent, fontWeight: '600' },
-  hintText: { marginTop: 12, fontSize: 12, color: palette.inkMuted, textAlign: 'center' },
+  loadingLogoWrap: {
+    width: 96,
+    height: 72,
+    borderRadius: 14,
+    overflow: 'hidden',
+    marginBottom: 14,
+  },
+  loadingLogoWebView: {
+    width: 96,
+    height: 72,
+    backgroundColor: 'transparent',
+  },
+  scanningText: {
+    fontSize: 14,
+    color: palette.ink,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+    marginBottom: 4,
+  },
+  scanningFileText: {
+    fontSize: 12,
+    color: palette.inkMuted,
+    fontWeight: '600',
+    marginBottom: 10,
+  },
+  processingStageText: {
+    fontSize: 11,
+    color: palette.inkMuted,
+    fontWeight: '500',
+    marginBottom: 12,
+    fontStyle: 'italic',
+    letterSpacing: 0.3,
+  },
+  loadingBarTrack: {
+    width: 188,
+    height: 3,
+    backgroundColor: '#D8D2C6',
+    borderRadius: 2,
+    overflow: 'hidden',
+  },
+  loadingBarPulse: {
+    height: 3,
+    backgroundColor: barPalette.accent,
+    borderRadius: 2,
+  },
+  cancelScanButton: {
+    marginTop: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#D6D0C4',
+    backgroundColor: '#F1EEE4',
+  },
+  cancelScanButtonText: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.4,
+    color: '#6E675E',
+    textTransform: 'uppercase',
+  },
   errorTitle: { fontSize: 18, fontWeight: '700', color: palette.ink, marginBottom: 8 },
   errorText: { fontSize: 13, color: palette.inkMuted, textAlign: 'center', marginBottom: 16, paddingHorizontal: 16 },
   retryButton: {

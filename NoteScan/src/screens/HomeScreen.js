@@ -7,15 +7,101 @@ import {
   StatusBar,
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
-import { SvgXml } from 'react-native-svg';
+import { WebView } from 'react-native-webview';
 import { OMRSettings } from '../services/OMRSettings';
 
-const logoXml = `
-<svg width="160" height="120" viewBox="0 0 160 120" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path d="M12 60C30 32 58 20 88 20C118 20 146 32 164 60C146 88 118 100 88 100C58 100 30 88 12 60Z" fill="#F1EEE4" stroke="#3E3C37" stroke-width="3"/>
-  <circle cx="78" cy="60" r="9" fill="#3E3C37"/>
-  <path d="M108 40V76C108 80.9 104 84.9 99.1 84.9C94.2 84.9 90.2 80.9 90.2 76C90.2 71.1 94.2 67.1 99.1 67.1C100.8 67.1 102.4 67.5 103.8 68.2V40H108Z" fill="#3E3C37"/>
-</svg>
+const animatedLogoHtml = `
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        overflow: hidden;
+      }
+      .wrap {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      @keyframes blink {
+        0%, 88%, 100% { transform: scaleY(1); }
+        92%, 96% { transform: scaleY(0.04); }
+      }
+      @keyframes drift {
+        0%, 25% { transform: translate(0,0); }
+        30%, 55% { transform: translate(2px,-1px); }
+        60%, 85% { transform: translate(-2px,1px); }
+        90%, 100% { transform: translate(0,0); }
+      }
+      .eye {
+        animation: blink 6s ease-in-out infinite;
+        transform-origin: 41px 41px;
+      }
+      .pupil {
+        animation: drift 8s cubic-bezier(.45,.05,.55,.95) infinite;
+        transform-origin: 41px 41px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <svg width="70" height="52" viewBox="0 0 82 82" xmlns="http://www.w3.org/2000/svg" style="overflow:visible;">
+        <defs>
+          <clipPath id="homeLogoClip">
+            <path d="M4,41 Q41,-8 78,41 Q41,90 4,41Z" />
+          </clipPath>
+        </defs>
+        <g class="eye">
+          <path d="M4,41 Q41,-8 78,41 Q41,90 4,41Z" fill="#F1EEE4" stroke="#3E3C37" stroke-width="2.3"/>
+          <g clip-path="url(#homeLogoClip)">
+            <circle cx="41" cy="41" r="22" fill="#E8DCC8"/>
+            <circle cx="41" cy="41" r="22" fill="none" stroke="#3E3C37" stroke-width="1"/>
+            <g class="pupil">
+              <circle cx="41" cy="41" r="13" fill="#3E3C37"/>
+              <text id="homeLogoNoteGlyph" x="41" y="45" text-anchor="middle" dominant-baseline="middle" font-family="Georgia, serif" font-size="16" fill="#FFFFFF">&#9835;</text>
+              <circle cx="35" cy="34" r="2.5" fill="#FFFFFF" opacity="0.85"/>
+            </g>
+          </g>
+          <path d="M4,41 Q41,-8 78,41" fill="none" stroke="#3E3C37" stroke-width="2.3" stroke-linecap="round"/>
+          <path d="M4,41 Q41,90 78,41" fill="none" stroke="#3E3C37" stroke-width="1.2" stroke-linecap="round"/>
+        </g>
+      </svg>
+    </div>
+    <script>
+      (function () {
+        var eye = document.querySelector('.eye');
+        var note = document.getElementById('homeLogoNoteGlyph');
+        if (!eye || !note) return;
+
+        var notes = ['\u2669', '\u266A', '\u266B', '\u266C'];
+        var idx = notes.indexOf(note.textContent);
+        if (idx < 0) idx = 1;
+        var blinkDurationMs = 6000;
+        // Blink is closed between 92% and 96%; 94% is fully closed.
+        var fullyClosedOffsetMs = Math.round(blinkDurationMs * 0.94);
+
+        function setNextNote() {
+          idx = (idx + 1) % notes.length;
+          note.textContent = notes[idx];
+        }
+
+        setTimeout(function () {
+          setNextNote();
+          setInterval(setNextNote, blinkDurationMs);
+        }, fullyClosedOffsetMs);
+      })();
+    </script>
+  </body>
+</html>
 `;
 
 export const HomeScreen = ({ onNavigate, onPickFromGallery, onPickFromCamera }) => {
@@ -44,9 +130,18 @@ export const HomeScreen = ({ onNavigate, onPickFromGallery, onPickFromCamera }) 
       <View style={styles.header}>
         <View style={styles.headerTop}>
           <Text style={styles.title}>Music Eye</Text>
-          <SvgXml xml={logoXml} width={72} height={48} />
+          <View style={styles.logoWrap}>
+            <WebView
+              originWhitelist={["*"]}
+              source={{ html: animatedLogoHtml }}
+              style={styles.logoWebView}
+              scrollEnabled={false}
+              showsHorizontalScrollIndicator={false}
+              showsVerticalScrollIndicator={false}
+            />
+          </View>
         </View>
-        <Text style={styles.subtitle}>Powered by ZemEmu • scan and play in seconds</Text>
+        <Text style={styles.subtitle}>Powered by AI • scan and play in seconds</Text>
 
         {/* Engine / status indicator */}
         <TouchableOpacity style={styles.statusRow} onPress={checkServer}>
@@ -146,6 +241,17 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
+  },
+  logoWrap: {
+    width: 74,
+    height: 52,
+    overflow: 'hidden',
+    borderRadius: 8,
+  },
+  logoWebView: {
+    width: 74,
+    height: 52,
+    backgroundColor: 'transparent',
   },
   title: {
     fontSize: 36,

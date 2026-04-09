@@ -152,7 +152,7 @@ class ZemskyEmulatorServiceClass {
       if (onProgress) onProgress(msg);
     };
 
-    report('Preparing image for emulator upload...');
+    report('Loading image data...');
 
     const file = new File(imageUri);
     if (!file.exists) {
@@ -168,8 +168,6 @@ class ZemskyEmulatorServiceClass {
       : ext === 'webp' ? 'image/webp'
       : 'image/jpeg';
 
-    report('Sending image to Zemsky emulator engine...');
-
     let response;
     try {
       response = await this._postToAvailableEndpoint({
@@ -184,7 +182,10 @@ class ZemskyEmulatorServiceClass {
       );
     }
 
-    report('Parsing MusicXML...');
+    report('Detecting staff lines...');
+    report('Classifying symbols...');
+    report('Extracting note values...');
+    
     const raw = await response.text();
     let json;
     try {
@@ -195,6 +196,8 @@ class ZemskyEmulatorServiceClass {
         (raw ? `\n\n${raw.substring(0, 500)}` : '')
       );
     }
+    
+    report('Building MusicXML...');
     
     const musicXml = injectDeterministicNoteIds(
       normalizeMusicXmlSoftwareTag(json.musicxml)
@@ -208,10 +211,10 @@ class ZemskyEmulatorServiceClass {
       collapseTies: true,
     });
 
-    report('Processing complete!');
+    report('Done!');
 
     return {
-      musicXml,
+      musicXml: parsed.musicXml || musicXml,
       notes: parsed.notes,
       metadata: {
         ...parsed.metadata,

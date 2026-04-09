@@ -66,6 +66,21 @@ function staffVoiceToSATB(staffNum, voiceNum, stavesInPart) {
   return VOICE_NAMES[voiceNum] || VOICE_NAMES[((voiceNum - 1) % 4) + 1];
 }
 
+function rewritePartTimeSignature(xml, partId, beats, beatType) {
+  if (!partId || !Number.isFinite(beats) || !Number.isFinite(beatType)) return xml;
+  const escapedPartId = partId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const partRegex = new RegExp(
+    `(<part\\s+id="${escapedPartId}"[^>]*>)([\\s\\S]*?)(<\\/part>)`,
+    'i'
+  );
+  const replacementTime = `<time><beats>${beats}</beats><beat-type>${beatType}</beat-type></time>`;
+
+  return xml.replace(partRegex, (match, openTag, inner, closeTag) => {
+    const updatedInner = inner.replace(/<time>([\s\S]*?)<\/time>/g, replacementTime);
+    return `${openTag}${updatedInner}${closeTag}`;
+  });
+}
+
 export class MusicXMLParser {
   /**
    * Parse a MusicXML string into notes and metadata.
@@ -110,6 +125,7 @@ export class MusicXMLParser {
     let globalStaffOffset = 0;
     let systemIndex = 0;
     let globalBeatOffset = 0; // Absolute beat position across all measures
+    const partMeterOverrides = [];
 
     for (let partIdx = 0; partIdx < partIds.length; partIdx++) {
       const partId = partIds[partIdx];
@@ -456,6 +472,12 @@ export class MusicXMLParser {
           ? { beats: Math.round(inferredQuarterBeats), beatType: 4 }
           : { beats: Math.round(inferredQuarterBeats * 2), beatType: 8 };
 
+        partMeterOverrides.push({
+          partId,
+          beats: partTimeSignatureForMetadata.beats,
+          beatType: partTimeSignatureForMetadata.beatType,
+        });
+
         console.warn(
           `⏱️ Meter override for part ${partId}: exported=${currentTime.beats}/${currentTime.beatType}, ` +
           `inferred=${partTimeSignatureForMetadata.beats}/${partTimeSignatureForMetadata.beatType} ` +
@@ -479,6 +501,16 @@ export class MusicXMLParser {
     // Resolve ties unless strict literal parsing is requested.
     if (collapseTies) {
       this._resolveTies(notes);
+    }
+
+    let adjustedMusicXml = xml;
+    for (const override of partMeterOverrides) {
+      adjustedMusicXml = rewritePartTimeSignature(
+        adjustedMusicXml,
+        override.partId,
+        override.beats,
+        override.beatType
+      );
     }
 
     metadata.systems = Math.max(1, systemIndex + 1);
@@ -699,7 +731,7 @@ export class MusicXMLParser {
       (metadata.tempo ? `\n   Tempo: ${metadata.tempo} BPM` : '')
     );
 
-    return { notes, metadata };
+    return { notes, metadata, musicXml: adjustedMusicXml };
   }
 
   /* ─── Internal Helpers ─── */

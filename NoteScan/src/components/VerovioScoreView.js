@@ -90,7 +90,7 @@ function buildHtml(musicXml, runtimeUri, renderViewPreset = 'fit') {
       let activeNodes = [];
       let domIdIndex = new Map();
       let playheadMode = 'notes';
-      let playheadColor = '#E05A2A';
+      let playheadColor = '#F08A45';
 
       function post(type, payload) {
         if (!window.ReactNativeWebView) return;
@@ -387,7 +387,7 @@ export const VerovioScoreView = forwardRef(({
   musicXml,
   currentBeat,
   playheadMode = 'notes',
-  playheadColor = '#E05A2A',
+  playheadColor = '#F08A45',
   renderViewPreset = 'fit',
   onPlayheadModeChange,
   onPlayheadColorChange,

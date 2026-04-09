@@ -162,22 +162,8 @@ export const PlaybackVisualization = ({
   const nextEntry = positions[activeIndex + 1] || null;
   const activeSystemIndex = activeEntry?.systemIndex ?? 0;
 
-  // ─── Smooth lerp between current and next position ───
-  let activeRatio = activeEntry?.ratio ?? 0;
-  if (activeEntry && nextEntry) {
-    const elapsed = currentTime - activeEntry.time;
-    const span = nextEntry.time - activeEntry.time;
-    if (span > 0) {
-      const t = Math.max(0, Math.min(1, elapsed / span));
-      const sameSystem = activeEntry.systemIndex === nextEntry.systemIndex;
-      if (sameSystem) {
-        activeRatio = activeEntry.ratio + t * (nextEntry.ratio - activeEntry.ratio);
-      } else {
-        // Cross-system: glide to end of current system, then snap at ~95%
-        activeRatio = activeEntry.ratio + t * (1 - activeEntry.ratio);
-      }
-    }
-  }
+  // Snap directly to the current onset position so the beat feels decisive.
+  const activeRatio = activeEntry?.ratio ?? 0;
 
   const system = systemBounds[activeSystemIndex];
 

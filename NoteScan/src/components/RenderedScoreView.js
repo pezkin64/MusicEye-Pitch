@@ -353,9 +353,10 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
       let displayedCursorRect = null;
       let cursorResetTimer = null;
       let playheadMode = 'both'; // 'line' | 'notes' | 'both'
-      let playheadColor = '#E05A2A';
+      let playheadColor = '#F08A45';
       let activeGraphicalNotes = [];
       let activeElementIds = new Set();
+      let graphicalNotesByElementId = new Map();
       let activeVoiceSelection = {
         Soprano: true,
         Alto: true,
@@ -569,6 +570,64 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
         });
       }
 
+      function getActiveGraphicalNotesFromIds() {
+        if (!activeElementIds || activeElementIds.size === 0) return [];
+
+        const next = [];
+        const seen = new Set();
+        activeElementIds.forEach((id) => {
+          const matches = graphicalNotesByElementId.get(id);
+          if (!Array.isArray(matches)) return;
+          matches.forEach((note) => {
+            if (!note || seen.has(note)) return;
+            seen.add(note);
+            next.push(note);
+          });
+        });
+        return next;
+      }
+
+      function indexGraphicalNotesByElementId() {
+        graphicalNotesByElementId = new Map();
+        if (!osmd || !osmd.cursor || !osmd.cursor.iterator) return;
+
+        try {
+          osmd.cursor.reset();
+          osmd.cursor.show();
+
+          let steps = 0;
+          const maxSteps = Math.max(512, (noteTimestamps.length || 0) * 6);
+
+          while (steps < maxSteps) {
+            const notes = getCursorGraphicalNotes();
+            notes.forEach((note) => {
+              const id = getGraphicalNoteElementId(note);
+              if (!id) return;
+              const bucket = graphicalNotesByElementId.get(id) || [];
+              if (!bucket.includes(note)) {
+                bucket.push(note);
+                graphicalNotesByElementId.set(id, bucket);
+              }
+            });
+
+            if (osmd.cursor.iterator.EndReached) break;
+            osmd.cursor.next();
+            steps += 1;
+          }
+        } catch (e) {
+          // Keep playback functional even if traversal fails on some scores.
+        } finally {
+          try {
+            osmd.cursor.reset();
+            osmd.cursor.show();
+            lastTargetPos = 0;
+            displayedCursorRect = getCursorRect();
+          } catch (e) {
+            // ignore
+          }
+        }
+      }
+
       function pickGlyphIdsForSelectedVoices(candidateIds) {
         const ranked = [];
         (Array.isArray(candidateIds) ? candidateIds : []).forEach((gid) => {
@@ -766,19 +825,86 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
       function applyVisualMode() {
         const cursor = getCursorElement();
         scoreEl.classList.toggle('playhead-notes', playheadMode === 'notes');
-        if (!cursor) return;
-        if (playheadMode === 'notes') {
-          cursor.style.opacity = '0';
-          cursor.style.visibility = 'hidden';
-          cursor.style.display = 'none';
-        } else if (playheadMode === 'both') {
-          cursor.style.display = '';
-          cursor.style.visibility = 'visible';
-          cursor.style.opacity = '0.18';
-        } else {
-          cursor.style.display = '';
-          cursor.style.visibility = 'visible';
-          cursor.style.opacity = '1';
+        if (cursor) {
+          if (playheadMode === 'notes') {
+            cursor.style.opacity = '0';
+            cursor.style.visibility = 'hidden';
+            cursor.style.display = 'none';
+          } else if (playheadMode === 'both') {
+            cursor.style.display = '';
+            cursor.style.visibility = 'visible';
+            cursor.style.opacity = '0.18';
+          } else {
+            cursor.style.display = '';
+            cursor.style.visibility = 'visible';
+            cursor.style.opacity = '1';
+          }
+        }
+
+        syncOsmdImageCursor();
+      }
+
+      function getOsmdImageCursorElement() {
+        return scoreEl.querySelector('img[id^="cursorImg-"]');
+      }
+
+      function syncOsmdImageCursor() {
+        const cursorImg = getOsmdImageCursorElement();
+        const osmdCursor = osmd && osmd.cursor ? osmd.cursor : null;
+        if (!osmdCursor) {
+          if (cursorImg) {
+            if (playheadMode === 'notes') {
+              cursorImg.style.display = 'none';
+              cursorImg.style.visibility = 'hidden';
+              cursorImg.style.opacity = '0';
+            } else if (playheadMode === 'both') {
+              cursorImg.style.display = '';
+              cursorImg.style.visibility = 'visible';
+              cursorImg.style.opacity = '0.18';
+            } else {
+              cursorImg.style.display = '';
+              cursorImg.style.visibility = 'visible';
+              cursorImg.style.opacity = '1';
+            }
+          }
+          return;
+        }
+
+        try {
+          const currentOptions = osmdCursor.CursorOptions || {};
+          const nextOptions = {
+            ...currentOptions,
+            color: playheadColor,
+            alpha: playheadMode === 'both' ? 0.18 : 1,
+          };
+
+          osmdCursor.CursorOptions = nextOptions;
+          const targetCursor = osmdCursor.cursorElement || cursorImg;
+          const width = targetCursor && Number(targetCursor.width) > 0
+            ? Number(targetCursor.width)
+            : 32;
+
+          if (typeof osmdCursor.updateStyle === 'function') {
+            osmdCursor.updateStyle(width, nextOptions);
+          }
+
+          if (targetCursor) {
+            if (playheadMode === 'notes') {
+              targetCursor.style.display = 'none';
+              targetCursor.style.visibility = 'hidden';
+              targetCursor.style.opacity = '0';
+            } else if (playheadMode === 'both') {
+              targetCursor.style.display = '';
+              targetCursor.style.visibility = 'visible';
+              targetCursor.style.opacity = '0.18';
+            } else {
+              targetCursor.style.display = '';
+              targetCursor.style.visibility = 'visible';
+              targetCursor.style.opacity = '1';
+            }
+          }
+        } catch (err) {
+          // Keep playback working even if OSMD internals differ across versions.
         }
       }
 
@@ -807,17 +933,22 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
           }
         }
 
-        // Directly update all cursor elements to override OSMD's default colors
-        const cursorEls = scoreEl.querySelectorAll('.osmd-cursor, .osmd-cursor line, .osmd-cursor path');
+        // Directly update all cursor elements to override OSMD's default colors.
+        // Use setProperty(..., 'important') because assigning "... !important"
+        // to style.stroke/style.fill is ignored by the browser.
+        const cursorEls = scoreEl.querySelectorAll('.osmd-cursor, .osmd-cursor line, .osmd-cursor path, .osmd-cursor rect');
         cursorEls.forEach((el) => {
-          el.style.stroke = playheadColor + ' !important';
+          el.style.setProperty('stroke', playheadColor, 'important');
           el.setAttribute('stroke', playheadColor);
-          // Remove any fill that might override the stroke
-          if (el.tagName.toLowerCase() === 'line') {
-            el.style.fill = 'none !important';
+          // Remove any fill that can force legacy green cursor rectangles.
+          const tag = el.tagName.toLowerCase();
+          if (tag === 'line' || tag === 'rect' || tag === 'path') {
+            el.style.setProperty('fill', 'none', 'important');
             el.setAttribute('fill', 'none');
           }
         });
+
+        syncOsmdImageCursor();
 
         if (activeGraphicalNotes.length) {
           activeGraphicalNotes.forEach((graphicalNote) => {
@@ -839,10 +970,6 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
       function animateCursorToTarget(cursor, targetRect) {
         if (!cursor || !targetRect) return;
 
-        const previousRect = displayedCursorRect || targetRect;
-        const dx = previousRect.x - targetRect.x;
-        const dy = previousRect.y - targetRect.y;
-
         if (cursorResetTimer) {
           clearTimeout(cursorResetTimer);
           cursorResetTimer = null;
@@ -850,19 +977,7 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
 
         cursor.style.transition = 'none';
         cursor.style.transformOrigin = '0 0';
-        cursor.style.transform = 'translate(' + dx + 'px, ' + dy + 'px)';
-        void cursor.getBoundingClientRect();
-
-        const distance = Math.sqrt(dx * dx + dy * dy);
-        const durationMs = Math.max(14, Math.min(42, 12 + distance * 0.08));
-        cursor.style.transition = 'transform ' + durationMs + 'ms linear';
         cursor.style.transform = 'translate(0px, 0px)';
-
-        cursorResetTimer = setTimeout(() => {
-          if (cursor) {
-            cursor.style.transition = 'none';
-          }
-        }, durationMs + 20);
 
         displayedCursorRect = targetRect;
       }
@@ -881,16 +996,26 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
 
         const cursorEl = getCursorElement();
 
+        // Grounded mode: if caller provided exact note IDs for this tick,
+        // color those notes globally instead of restricting to the cursor position.
+        if (activeElementIds && activeElementIds.size > 0) {
+          const idMatchedGraphicalNotes = getActiveGraphicalNotesFromIds();
+          if (idMatchedGraphicalNotes.length) {
+            const voiceFilteredByIds = filterGraphicalNotesByVoiceSelection(idMatchedGraphicalNotes);
+            syncActiveGraphicalNotes(
+              voiceFilteredByIds.length ? voiceFilteredByIds : idMatchedGraphicalNotes
+            );
+            return;
+          }
+
+          clearActiveNotes();
+          return;
+        }
+
         const cursorGraphicalNotes = getCursorGraphicalNotes();
         const voiceFilteredGraphicalNotes = filterGraphicalNotesByVoiceSelection(cursorGraphicalNotes);
         const filteredGraphicalNotes = filterGraphicalNotesByActiveIds(voiceFilteredGraphicalNotes);
         const directColorApplied = syncActiveGraphicalNotes(filteredGraphicalNotes);
-
-        // Grounded mode: when active note IDs are provided for the current tick,
-        // do not fall back to heuristic glyph picks that could light up another voice.
-        if (activeElementIds && activeElementIds.size > 0) {
-          return;
-        }
 
         let foundAny = directColorApplied;
         if (!directColorApplied) {
@@ -1132,6 +1257,9 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
           await osmd.load(xml);
 
           if (osmd.rules) {
+            if (typeof osmd.rules.DefaultColorCursor === 'string') {
+              osmd.rules.DefaultColorCursor = playheadColor;
+            }
             if (Number.isFinite(layoutSettings.notationFontScale)) {
               osmd.rules.VexFlowDefaultNotationFontScale = layoutSettings.notationFontScale;
             }
@@ -1166,6 +1294,7 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
 
           // Cache all note/rest timestamps for smooth positioning
           noteTimestamps = extractNoteTimestamps();
+          indexGraphicalNotesByElementId();
           setPlayheadColor(playheadColor);
           setPlayheadMode(playheadMode);
           
@@ -1185,7 +1314,7 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
 </html>`;
 }
 
-export const RenderedScoreView = forwardRef(({ musicXml, currentBeat, playheadMode = 'notes', playheadColor = '#E05A2A', renderViewPreset = 'fit', onPlayheadModeChange, onPlayheadColorChange, onRenderViewPresetChange }, ref) => {
+export const RenderedScoreView = forwardRef(({ musicXml, currentBeat, playheadMode = 'notes', playheadColor = '#F08A45', renderViewPreset = 'fit', onPlayheadModeChange, onPlayheadColorChange, onRenderViewPresetChange }, ref) => {
   const webViewRef = useRef(null);
   const lastInjectedBeatRef = useRef(-1);
   const [runtimeScriptText, setRuntimeScriptText] = useState('');
@@ -1469,7 +1598,7 @@ export const RenderedScoreView = forwardRef(({ musicXml, currentBeat, playheadMo
           style={({ pressed }) => [styles.colorPill, pressed && styles.pressedPill]}
           onPress={() => {
             if (typeof onPlayheadColorChange === 'function') {
-              const colors = ['#E05A2A', '#F08A45', '#C94B1A', '#FFB36A'];
+              const colors = ['#F08A45', '#C94B1A', '#6B4226', '#8B5E3C'];
               const idx = Math.max(0, colors.indexOf(playheadColor));
               const nextColor = colors[(idx + 1) % colors.length];
               console.log('Color pill tapped: current=', playheadColor, 'next=', nextColor);
