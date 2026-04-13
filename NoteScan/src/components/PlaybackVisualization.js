@@ -58,6 +58,12 @@ const DURATION_TO_BEATS = {
   dotted_eighth: 0.75,
   dotted_sixteenth: 0.375,
   dotted_32nd: 0.1875,
+  dotted_dotted_whole: 7,
+  dotted_dotted_half: 3.5,
+  dotted_dotted_quarter: 1.75,
+  dotted_dotted_eighth: 0.875,
+  dotted_dotted_sixteenth: 0.4375,
+  dotted_dotted_32nd: 0.21875,
 };
 
 /** Memoized waveform note bars — only re-renders when the timeline data changes, not on every currentTime tick */

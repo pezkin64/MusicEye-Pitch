@@ -5,9 +5,13 @@
   "main": "node_modules/expo/AppEntry.js",
   "scripts": {
     "start": "expo start",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
     "web": "expo start --web",
+    "postinstall": "patch-package",
+    "prebuild:android": "npx expo prebuild --platform android --clean",
+    "build:android-apk": "npx eas build -p android --profile preview",
+    "build:android-aab": "npx eas build -p android --profile production",
     "test": "jest"
   },
   "dependencies": {
@@ -34,7 +38,8 @@
   "devDependencies": {
     "@babel/core": "^7.24.0",
     "@expo/ngrok": "^4.1.3",
-    "babel-preset-expo": "~54.0.10"
+    "babel-preset-expo": "~54.0.10",
+    "patch-package": "^8.0.1"
   },
   "private": true
 }

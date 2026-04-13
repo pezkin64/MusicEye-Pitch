@@ -18,6 +18,8 @@
       "supportsTabletMode": true
     },
     "android": {
+      "package": "com.pezkin.musiceye.notescan",
+      "versionCode": 1,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#F9F7F1"

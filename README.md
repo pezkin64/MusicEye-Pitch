@@ -39,7 +39,7 @@ cd ../ZemskyHarness
 adb shell am start -n com.musiceye.zemskyharness/.MainActivity
 ```
 
-### 3) Start NoteScan
+### 3) Start NoteScan in Expo during development
 
 ```bash
 cd ../NoteScan
@@ -51,6 +51,23 @@ For tunnel mode:
 ```bash
 npx expo start -- --tunnel
 ```
+
+### 4) Build an installable APK
+
+If you want to install the app directly on your phone without Expo Go, build an APK:
+
+```bash
+cd ../NoteScan
+npm run build:android-apk
+```
+
+For a local native Android project instead, generate it first:
+
+```bash
+npm run prebuild:android
+```
+
+That creates the `android/` folder so you can build with Gradle later if you want a fully local APK workflow.
 
 ## Endpoints Used by NoteScan
 

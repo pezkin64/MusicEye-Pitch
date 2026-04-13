@@ -81,6 +81,11 @@ function rewritePartTimeSignature(xml, partId, beats, beatType) {
   });
 }
 
+function buildDottedDurationName(baseName, dotCount) {
+  if (!Number.isFinite(dotCount) || dotCount <= 0) return baseName;
+  return `${'dotted_'.repeat(dotCount)}${baseName}`;
+}
+
 export class MusicXMLParser {
   /**
    * Parse a MusicXML string into notes and metadata.
@@ -240,8 +245,8 @@ export class MusicXMLParser {
             const durDivs = parseInt(content.match(/<duration>(\d+)<\/duration>/)?.[1] || '0');
             const beats = durDivs / divisions;
 
-            const forwardStaff = parseInt(content.match(/<staff>(\d+)<\/staff>/)?.[1] || '0');
-            const forwardVoice = parseInt(content.match(/<voice>(\d+)<\/voice>/)?.[1] || '0');
+            const forwardStaff = Number.parseInt(content.match(/<staff>(\d+)<\/staff>/)?.[1] ?? '', 10);
+            const forwardVoice = Number.parseInt(content.match(/<voice>(\d+)<\/voice>/)?.[1] ?? '', 10);
             const hasForwardContext = Number.isFinite(forwardStaff) && forwardStaff > 0 &&
               Number.isFinite(forwardVoice) && forwardVoice > 0;
 
@@ -280,8 +285,9 @@ export class MusicXMLParser {
           const durName = DURATION_TYPE_MAP[typeStr] || this._beatsToType(durationBeats);
 
           // Dotted?
-          const dotted = /<dot\s*\/>/.test(noteXml);
-          const fullDurName = dotted ? `dotted_${durName}` : durName;
+          const dotCount = (noteXml.match(/<dot\s*\/?\s*>/g) || []).length;
+          const dotted = dotCount > 0;
+          const fullDurName = buildDottedDurationName(durName, dotCount);
 
           // Staff and voice
           const staffNum = parseInt(noteXml.match(/<staff>(\d+)<\/staff>/)?.[1] || '1');
@@ -330,6 +336,7 @@ export class MusicXMLParser {
             measureHasRest = true;
             notes.push({
               type: 'rest',
+              partIndex: partIdx,
               xmlId,
               pitch: null,
               midiNote: null,
@@ -365,6 +372,7 @@ export class MusicXMLParser {
 
               notes.push({
                 type: 'note',
+                partIndex: partIdx,
                 xmlId,
                 pitch: pitchName,
                 midiNote,

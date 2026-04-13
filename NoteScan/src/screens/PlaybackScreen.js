@@ -71,6 +71,12 @@ const DURATION_TO_BEATS = {
   dotted_eighth: 0.75,
   dotted_sixteenth: 0.375,
   dotted_32nd: 0.1875,
+  dotted_dotted_whole: 7,
+  dotted_dotted_half: 3.5,
+  dotted_dotted_quarter: 1.75,
+  dotted_dotted_eighth: 0.875,
+  dotted_dotted_sixteenth: 0.4375,
+  dotted_dotted_32nd: 0.21875,
 };
 
 const loadingEyeHtml = `
@@ -744,7 +750,7 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
         baseMs: 120000,
         perMbMs: 15000,
         maxMs: 420000,
-        stallMs: 90000,
+        stallMs: 180000,
       },
     };
 
@@ -788,14 +794,8 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
         service = OMRSettings.getService();
       }
 
-      // Fail fast if harness/server is not reachable to avoid a long "infinite" loader feel.
-      if (typeof service?.checkHealth === 'function') {
-        const health = await service.checkHealth();
-        if (isCancelled()) throw new Error('Scan cancelled');
-        if (!health?.ok) {
-          throw new Error(health?.message || `${engineName} is unreachable`);
-        }
-      }
+      // Skip blocking health probes here. They can add multi-second delays
+      // when endpoint probing retries; processSheet already handles connectivity.
 
       let watchdog = null;
       let lastActivityAt = Date.now();
@@ -867,7 +867,7 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
     };
 
     // ── Check cache first ──
-    const CACHE_LOOKUP_TIMEOUT_MS = 5000;
+    const CACHE_LOOKUP_TIMEOUT_MS = 1500;
     let skipCacheForThisRun = false;
     setProcessingStage('Checking cache...');
     try {

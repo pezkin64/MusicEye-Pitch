@@ -21,6 +21,7 @@ class ZemskyEmulatorServiceClass {
     const fallbacks = [
       'http://127.0.0.1:8084',
       'http://localhost:8084',
+      'http://10.0.2.2:8084',
     ];
 
     for (const f of fallbacks) {
@@ -117,7 +118,7 @@ class ZemskyEmulatorServiceClass {
                 Accept: 'application/json, application/xml, text/xml, */*',
               },
             },
-            90000
+            180000
           );
 
           if (!response.ok) {
@@ -169,7 +170,13 @@ class ZemskyEmulatorServiceClass {
       : 'image/jpeg';
 
     let response;
+    let heartbeat = null;
     try {
+      // Keep UI watchdog alive while native OMR works on dense pages.
+      heartbeat = setInterval(() => {
+        report('Processing in ZemEmu...');
+      }, 8000);
+
       response = await this._postToAvailableEndpoint({
         imageUri,
         fileName,
@@ -180,8 +187,11 @@ class ZemskyEmulatorServiceClass {
         `Failed to connect to Zemsky emulator engine: ${e.message}\n\n` +
         'Make sure the Zemsky Harness app is open on the same Android phone (or emulator) as NoteScan.'
       );
+    } finally {
+      if (heartbeat) clearInterval(heartbeat);
     }
 
+    report('Received ZemEmu response...');
     report('Detecting staff lines...');
     report('Classifying symbols...');
     report('Extracting note values...');
