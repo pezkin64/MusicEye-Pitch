@@ -75,7 +75,7 @@ class ZemskyEmulatorServiceClass {
 
           if (response.ok) {
             if (baseUrl !== this.getServerUrl()) this.setServerUrl(baseUrl);
-            return { ok: true, message: `Zemsky emulator engine is reachable (${baseUrl})` };
+            return { ok: true, message: `Music eye engine is reachable (${baseUrl})` };
           }
           lastErr = new Error(`HTTP ${response.status} on ${baseUrl}`);
         } catch (e) {
@@ -90,7 +90,7 @@ class ZemskyEmulatorServiceClass {
     }
     return {
       ok: false,
-      message: `Cannot reach Zemsky emulator engine: ${lastErr?.message || 'Unknown error'}`,
+      message: `Cannot reach Music eye engine: ${lastErr?.message || 'Unknown error'}`,
     };
   }
 
@@ -149,7 +149,7 @@ class ZemskyEmulatorServiceClass {
 
   async processImage(imageUri, onProgress) {
     const report = (msg) => {
-      console.log(`🎼 Zemsky: ${msg}`);
+      console.log(`🎼 Music eye: ${msg}`);
       if (onProgress) onProgress(msg);
     };
 
@@ -174,7 +174,7 @@ class ZemskyEmulatorServiceClass {
     try {
       // Keep UI watchdog alive while native OMR works on dense pages.
       heartbeat = setInterval(() => {
-        report('Processing in ZemEmu...');
+        report('Processing in Music eye...');
       }, 8000);
 
       response = await this._postToAvailableEndpoint({
@@ -184,14 +184,14 @@ class ZemskyEmulatorServiceClass {
       });
     } catch (e) {
       throw new Error(
-        `Failed to connect to Zemsky emulator engine: ${e.message}\n\n` +
-        'Make sure the Zemsky Harness app is open on the same Android phone (or emulator) as NoteScan.'
+        `Failed to connect to Music eye engine: ${e.message}\n\n` +
+        'Make sure the helper app is open on the same phone as NoteScan.'
       );
     } finally {
       if (heartbeat) clearInterval(heartbeat);
     }
 
-    report('Received ZemEmu response...');
+    report('Received Music eye response...');
     report('Detecting staff lines...');
     report('Classifying symbols...');
     report('Extracting note values...');
@@ -202,32 +202,42 @@ class ZemskyEmulatorServiceClass {
       json = JSON.parse(raw);
     } catch (e) {
       throw new Error(
-        `Zemsky emulator returned a non-JSON response: ${e.message}` +
+        `Music eye returned a non-JSON response: ${e.message}` +
         (raw ? `\n\n${raw.substring(0, 500)}` : '')
       );
     }
     
     report('Building MusicXML...');
     
-    const musicXml = injectDeterministicNoteIds(
-      normalizeMusicXmlSoftwareTag(json.musicxml)
+    const rawMusicXml = typeof json.musicxml === 'string' ? json.musicxml : '';
+    const parsedInputMusicXml = injectDeterministicNoteIds(
+      normalizeMusicXmlSoftwareTag(rawMusicXml)
     );
-    if (!musicXml || musicXml.length < 50) {
-      throw new Error('Zemsky emulator returned an empty or invalid MusicXML payload');
+    if (!parsedInputMusicXml || parsedInputMusicXml.length < 50) {
+      throw new Error('Music eye returned an empty or invalid MusicXML payload');
     }
 
-    const parsed = MusicXMLParser.parse(musicXml, {
+    const parsed = MusicXMLParser.parse(parsedInputMusicXml, {
       strictMusicXml: true,
       collapseTies: true,
     });
 
+    // Preserve native tempo exactly as emitted by libsource-lib.so for debugging/transparency.
+    const nativeTempoMatch = [...rawMusicXml.matchAll(/<sound[^>]*\btempo="([\d.]+)"/g)];
+    const nativeTempo = nativeTempoMatch.length > 0
+      ? Number.parseFloat(nativeTempoMatch[nativeTempoMatch.length - 1][1])
+      : null;
+
     report('Done!');
 
     return {
-      musicXml: parsed.musicXml || musicXml,
+      // Keep export payload pure: exactly what the native library returned.
+      musicXml: rawMusicXml,
+      parsedMusicXml: parsed.musicXml || parsedInputMusicXml,
       notes: parsed.notes,
       metadata: {
         ...parsed.metadata,
+        nativeTempo: Number.isFinite(nativeTempo) ? nativeTempo : null,
         source: 'zemsky-emulator',
       },
       notePositions: null,

@@ -248,9 +248,8 @@ public class OmrEngine {
                             sessionPtr,
                             null,
                             "Scanned Score",
-                            "Piano",
-                            1,
-                            0,
+                            "120",
+                            4,
                             4,
                             divisions,
                             voiceFilter

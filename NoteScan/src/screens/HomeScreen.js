@@ -121,7 +121,7 @@ export const HomeScreen = ({ onNavigate, onPickFromGallery, onPickFromCamera }) 
   };
 
   const statusLabel =
-    serverStatus === null ? 'Checking ZemEmu...' : serverStatus ? 'ZemEmu connected' : 'ZemEmu unreachable';
+    serverStatus === null ? 'Checking Music eye...' : serverStatus ? 'Music eye connected' : 'Music eye unreachable';
 
   return (
     <View style={styles.container}>
@@ -129,7 +129,7 @@ export const HomeScreen = ({ onNavigate, onPickFromGallery, onPickFromCamera }) 
 
       <View style={styles.header}>
         <View style={styles.headerTop}>
-          <Text style={styles.title}>Music Eye</Text>
+          <Text style={styles.title}>Music eye</Text>
           <View style={styles.logoWrap}>
             <WebView
               originWhitelist={["*"]}

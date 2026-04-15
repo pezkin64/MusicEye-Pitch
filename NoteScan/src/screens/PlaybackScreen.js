@@ -22,11 +22,9 @@ import { WebView } from 'react-native-webview';
 import { AudioPlaybackService } from '../services/AudioPlaybackService';
 import { PlaybackVisualization } from '../components/PlaybackVisualization';
 import { RenderedScoreView } from '../components/RenderedScoreView';
-import { VerovioScoreView } from '../components/VerovioScoreView';
 import { ScoreInfoPanel } from '../components/ScoreInfoPanel';
 import { OMRSettings } from '../services/OMRSettings';
 import { OMRCacheService } from '../services/OMRCacheService';
-import { CanonicalTimeline } from '../services/CanonicalTimeline';
 
 /* ─── Theme ─── */
 const palette = {
@@ -49,35 +47,13 @@ const barPalette = {
 
 // Temporary debug switch: disable pitch panel to isolate playback behavior.
 const ENABLE_PITCH_VIEW = false;
-const AUDIO_TIMELINE_MODE = 'canonical'; // 'canonical' | 'compressed'
+const AUDIO_TIMELINE_MODE = 'canonical';
 const RENDERED_PLAYHEAD_MODES = ['line', 'notes', 'both'];
 const RENDERED_HIGHLIGHT_COLORS = ['#F08A45', '#C94B1A', '#6B4226', '#8B5E3C'];
 const RENDER_VIEW_PRESETS = ['smart', 'fit'];
-const RENDER_ENGINES = ['osmd', 'verovio'];
 const RENDER_VISUAL_LEAD_MS = 0;
 const PLAYBACK_UI_UPDATE_MS = 16;
 
-const DURATION_TO_BEATS = {
-  whole: 4,
-  half: 2,
-  quarter: 1,
-  eighth: 0.5,
-  sixteenth: 0.25,
-  '32nd': 0.125,
-  '64th': 0.0625,
-  dotted_whole: 6,
-  dotted_half: 3,
-  dotted_quarter: 1.5,
-  dotted_eighth: 0.75,
-  dotted_sixteenth: 0.375,
-  dotted_32nd: 0.1875,
-  dotted_dotted_whole: 7,
-  dotted_dotted_half: 3.5,
-  dotted_dotted_quarter: 1.75,
-  dotted_dotted_eighth: 0.875,
-  dotted_dotted_sixteenth: 0.4375,
-  dotted_dotted_32nd: 0.21875,
-};
 
 const loadingEyeHtml = `
 <!doctype html>
@@ -213,103 +189,6 @@ const loadingEyeHtml = `
 </html>
 `;
 
-function buildPitchTimelineFromScoreData(notes, tempoBpm) {
-  if (!Array.isArray(notes) || !notes.length || !Number.isFinite(tempoBpm) || tempoBpm <= 0) {
-    return [];
-  }
-
-  const spb = 60 / tempoBpm;
-  return notes
-    .filter((n) => n.type === 'note' && Number.isFinite(n.midiNote) && Number.isFinite(n.beatOffset))
-    .map((n) => {
-      const durationBeats = Number.isFinite(n.tiedBeats)
-        ? n.tiedBeats
-        : Number.isFinite(n.durationBeats)
-          ? n.durationBeats
-          : (DURATION_TO_BEATS[n.duration] || 1);
-      return {
-        time: n.beatOffset * spb,
-        endTime: (n.beatOffset + durationBeats) * spb,
-        midiNote: n.midiNote,
-        voice: n.voice,
-      };
-    })
-    .sort((a, b) => a.time - b.time);
-}
-
-function buildRawPlaybackDataFromScoreData(notes) {
-  if (!Array.isArray(notes) || !notes.length) {
-    return { noteEvents: [], timingBeatData: [], totalBeats: 0 };
-  }
-
-  const noteEvents = notes
-    .filter((n) => n.type === 'note' && Number.isFinite(n.midiNote) && Number.isFinite(n.beatOffset))
-    .map((n) => {
-      const durationBeats = Number.isFinite(n.tiedBeats)
-        ? n.tiedBeats
-        : Number.isFinite(n.durationBeats)
-          ? n.durationBeats
-          : (DURATION_TO_BEATS[n.duration] || 1);
-      return {
-        midiNote: n.midiNote,
-        velocity: 100,
-        beatOffset: n.beatOffset,
-        durationBeats,
-        voice: n.voice || 'Soprano',
-        x: n.x || 0,
-        y: n.y || 0,
-        staffIndex: n.staffIndex,
-        systemIndex: n.systemIndex ?? 0,
-      };
-    })
-    .sort((a, b) => a.beatOffset - b.beatOffset);
-
-  const beatMap = new Map();
-  for (const e of noteEvents) {
-    const bo = Math.round(e.beatOffset * 1000) / 1000;
-    if (!beatMap.has(bo)) beatMap.set(bo, []);
-    beatMap.get(bo).push(e);
-  }
-
-  const timingBeatData = [];
-  for (const bo of [...beatMap.keys()].sort((a, b) => a - b)) {
-    const group = beatMap.get(bo);
-    const avgX = group.reduce((s, n) => s + n.x, 0) / group.length;
-    const avgY = group.reduce((s, n) => s + n.y, 0) / group.length;
-    timingBeatData.push({
-      beatOffset: bo,
-      x: avgX,
-      y: avgY,
-      voicePositions: group.map((n) => ({ voice: n.voice, y: n.y, x: n.x })),
-      staffIndex: group[0].staffIndex,
-      systemIndex: group[0].systemIndex,
-      isRest: false,
-    });
-  }
-
-  const rests = notes.filter((n) => n.type === 'rest' && Number.isFinite(n.beatOffset));
-  for (const r of rests) {
-    const bo = Math.round(r.beatOffset * 1000) / 1000;
-    if (beatMap.has(bo)) continue;
-    timingBeatData.push({
-      beatOffset: bo,
-      x: r.x || 0,
-      y: r.y || 0,
-      staffIndex: r.staffIndex,
-      systemIndex: r.systemIndex ?? 0,
-      isRest: true,
-    });
-  }
-  timingBeatData.sort((a, b) => a.beatOffset - b.beatOffset);
-
-  const totalBeats = noteEvents.reduce(
-    (mx, e) => Math.max(mx, e.beatOffset + e.durationBeats),
-    0
-  );
-
-  return { noteEvents, timingBeatData, totalBeats };
-}
-
 function buildPitchTimelineFromRawEvents(noteEvents, tempoBpm) {
   if (!Array.isArray(noteEvents) || !noteEvents.length || !Number.isFinite(tempoBpm) || tempoBpm <= 0) {
     return [];
@@ -323,65 +202,6 @@ function buildPitchTimelineFromRawEvents(noteEvents, tempoBpm) {
       voice: e.voice,
     }))
     .sort((a, b) => a.time - b.time);
-}
-
-function buildMusicXmlHighlightTimeline(notes, tempoBpm) {
-  if (!Array.isArray(notes) || !notes.length || !Number.isFinite(tempoBpm) || tempoBpm <= 0) {
-    return [];
-  }
-
-  const spb = 60 / tempoBpm;
-  const timeline = notes
-    .filter((note) => note && note.type === 'note' && Number.isFinite(note.beatOffset))
-    .map((note, index) => {
-      const durationBeats = Number.isFinite(note.tiedBeats)
-        ? note.tiedBeats
-        : Number.isFinite(note.durationBeats)
-          ? note.durationBeats
-          : (DURATION_TO_BEATS[note.duration] || 1);
-      const timeSeconds = note.beatOffset * spb;
-      const durationSeconds = Math.max(0, durationBeats * spb);
-      const elementId = note.xmlId || note.noteId || note.id || null;
-      return {
-        index,
-        timeSeconds,
-        durationSeconds,
-        endTimeSeconds: timeSeconds + durationSeconds,
-        elementId,
-        voice: note.voice || '',
-        staffIndex: Number.isFinite(note.staffIndex) ? note.staffIndex : null,
-        systemIndex: Number.isFinite(note.systemIndex) ? note.systemIndex : null,
-        beatOffset: note.beatOffset,
-      };
-    })
-    .sort((a, b) => a.timeSeconds - b.timeSeconds || a.systemIndex - b.systemIndex || a.staffIndex - b.staffIndex || a.index - b.index);
-  return timeline;
-}
-
-function buildHighlightTimelineFromPreparedEvents(noteEvents, tempoBpm) {
-  if (!Array.isArray(noteEvents) || !noteEvents.length || !Number.isFinite(tempoBpm) || tempoBpm <= 0) {
-    return [];
-  }
-
-  const spb = 60 / tempoBpm;
-  return noteEvents
-    .filter((event) => Number.isFinite(event.beatOffset) && Number.isFinite(event.durationBeats))
-    .map((event, index) => {
-      const timeSeconds = event.beatOffset * spb;
-      const durationSeconds = Math.max(0, event.durationBeats * spb);
-      return {
-        index,
-        timeSeconds,
-        durationSeconds,
-        endTimeSeconds: timeSeconds + durationSeconds,
-        elementId: event.xmlId || null,
-        voice: event.voice || '',
-        staffIndex: Number.isFinite(event.staffIndex) ? event.staffIndex : null,
-        systemIndex: Number.isFinite(event.systemIndex) ? event.systemIndex : null,
-        beatOffset: event.beatOffset,
-      };
-    })
-    .sort((a, b) => a.timeSeconds - b.timeSeconds || a.systemIndex - b.systemIndex || a.staffIndex - b.staffIndex || a.index - b.index);
 }
 
 function normalizeVoiceLabel(voice) {
@@ -401,37 +221,6 @@ function isVoiceAllowed(voiceSelection, entryVoice) {
     return !!voiceSelection[canonical];
   }
   return true;
-}
-
-function getActiveHighlightIds(timeline, currentTimeSeconds, voiceSelection) {
-  if (!Array.isArray(timeline) || !timeline.length || !Number.isFinite(currentTimeSeconds)) {
-    return [];
-  }
-
-  const eligible = timeline.filter((entry) => {
-    if (!entry || !entry.elementId) return false;
-    if (!isVoiceAllowed(voiceSelection, entry.voice)) return false;
-    return currentTimeSeconds >= entry.timeSeconds;
-  });
-
-  if (!eligible.length) {
-    const firstOnset = timeline.find((entry) => entry && entry.elementId && isVoiceAllowed(voiceSelection, entry.voice));
-    return firstOnset?.elementId ? [firstOnset.elementId] : [];
-  }
-
-  let latestTime = -Infinity;
-  for (const entry of eligible) {
-    if (entry.timeSeconds > latestTime) latestTime = entry.timeSeconds;
-  }
-
-  const EPSILON = 0.001;
-  const active = [];
-  for (const entry of eligible) {
-    if (Math.abs(entry.timeSeconds - latestTime) <= EPSILON && entry.elementId) {
-      active.push(entry.elementId);
-    }
-  }
-  return active;
 }
 
 function getLiteralPlaybackNotes(scoreData) {
@@ -468,8 +257,9 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
   const [renderedPlayheadMode, setRenderedPlayheadMode] = useState('notes');
   const [renderedHighlightColorIdx, setRenderedHighlightColorIdx] = useState(0);
   const [renderViewPreset, setRenderViewPreset] = useState('fit');
-  const [renderEngine, setRenderEngine] = useState(OMRSettings.getDefaultRenderer());
   const [preparedPlaybackEvents, setPreparedPlaybackEvents] = useState([]);
+  const [preparedTimepointGraph, setPreparedTimepointGraph] = useState([]);
+  const [preparedTotalBeats, setPreparedTotalBeats] = useState(0);
   const [clefFilter, setClefFilter] = useState('both');
   const [beatOnlyMode, setBeatOnlyMode] = useState(false);
 
@@ -485,7 +275,6 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
   const lastVisualTimeRef = useRef(0);
   const transportAnchorSecRef = useRef(0);
   const transportAnchorTsRef = useRef(0);
-  const lastHighlightBucketIndexRef = useRef(0);
   const loadingBarAnim = useRef(new Animated.Value(0)).current;
   const currentScanIdRef = useRef(0);
   const upperVoiceSelectionRef = useRef({ Soprano: true, Alto: true });
@@ -666,17 +455,6 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
   }, [imageUri]);
 
   useEffect(() => {
-    let cancelled = false;
-    OMRSettings.load().then(() => {
-      if (cancelled) return;
-      setRenderEngine(OMRSettings.getDefaultRenderer());
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
     AudioPlaybackService.setBeatOnlyMode(beatOnlyMode);
   }, [beatOnlyMode]);
 
@@ -742,7 +520,7 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
     const selectedEngine = OMRSettings.getEngine();
 
     const ENGINE_LABELS = {
-      zemsky: 'ZemEmu',
+      zemsky: 'Music eye',
     };
 
     const ENGINE_TIMEOUTS = {
@@ -988,11 +766,12 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
 
         // Prepare playback note events through the service path.
         const evtResult = AudioPlaybackService.prepareNoteEvents(playbackNotes, {
-          timelineMode: AUDIO_TIMELINE_MODE,
           measureBeats: scoreData?.metadata?.measureBeats,
         });
-        rawNoteEventsRef.current = Array.isArray(evtResult?.noteEvents) ? evtResult.noteEvents : [];
+        rawNoteEventsRef.current = AudioPlaybackService.getPreparedNoteEvents();
         setPreparedPlaybackEvents(rawNoteEventsRef.current);
+        setPreparedTimepointGraph(AudioPlaybackService.getPreparedTimepointGraph());
+        setPreparedTotalBeats(AudioPlaybackService.getPreparedTotalBeats());
         const canUseWebAudio = AudioPlaybackService.isWebAudioAvailable() && !!evtResult;
         if (cancelled || myId !== prepareIdRef.current) return;
 
@@ -1027,10 +806,9 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
               throw new Error('Clean pipeline requires beatOffset timing data; legacy prepare fallback is disabled.');
             }
           } else {
-            const fallbackBeats = rawNoteEventsRef.current.reduce(
-              (mx, e) => Math.max(mx, (e.beatOffset || 0) + (e.durationBeats || 0)),
-              0
-            );
+            const fallbackBeats = Number.isFinite(evtResult?.totalBeats)
+              ? evtResult.totalBeats
+              : 0;
             if (fallbackBeats > 0) {
               setTotalDuration(fallbackBeats * (60 / tempo));
             }
@@ -1145,10 +923,7 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
       setIsPaused(false);
     }
 
-    const fallbackBeats = rawNoteEventsRef.current.reduce(
-      (mx, e) => Math.max(mx, (e.beatOffset || 0) + (e.durationBeats || 0)),
-      0
-    );
+    const fallbackBeats = graphTotalBeats > 0 ? graphTotalBeats : preparedTotalBeats;
     if (fallbackBeats > 0) {
       setTotalDuration(fallbackBeats * (60 / newTempo));
     }
@@ -1167,7 +942,7 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
     AudioPlaybackService.setBeatOnlyMode(beatOnlyMode);
     AudioPlaybackService.setExternalBeatGuideOnsets(sharedBeatOffsetsForAudio, {
       measureBeats: scoreData?.metadata?.measureBeats,
-      totalBeats: canonicalTotalBeats,
+      totalBeats: graphTotalBeats > 0 ? graphTotalBeats : preparedTotalBeats,
     });
 
     if (isPaused) {
@@ -1184,7 +959,6 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
     setPlaybackTime(0);
     lastPlaybackUiUpdateRef.current = 0;
     lastVisualTimeRef.current = 0;
-    lastHighlightBucketIndexRef.current = 0;
     transportAnchorSecRef.current = 0;
     transportAnchorTsRef.current = Date.now();
     renderedScoreRef.current?.resetPlayback?.();
@@ -1245,7 +1019,6 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
     setIsPaused(false);
     setPlaybackTime(0);
     lastVisualTimeRef.current = 0;
-    lastHighlightBucketIndexRef.current = 0;
     transportAnchorSecRef.current = 0;
     transportAnchorTsRef.current = 0;
     renderedScoreRef.current?.resetPlayback?.();
@@ -1262,7 +1035,6 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
     setIsPaused(false);
     setPlaybackTime(0);
     lastVisualTimeRef.current = 0;
-    lastHighlightBucketIndexRef.current = 0;
     transportAnchorSecRef.current = 0;
     transportAnchorTsRef.current = 0;
     renderedScoreRef.current?.resetPlayback?.();
@@ -1275,25 +1047,31 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
   };
 
   const handleSeek = async (timeSec) => {
+    if (isPlaying) {
+      await AudioPlaybackService.pause();
+      setIsPlaying(false);
+      setIsPaused(true);
+    }
+
     AudioPlaybackService.setExternalBeatGuideOnsets(sharedBeatOffsetsForAudio, {
       measureBeats: scoreData?.metadata?.measureBeats,
-      totalBeats: canonicalTotalBeats,
+      totalBeats: graphTotalBeats > 0 ? graphTotalBeats : preparedTotalBeats,
     });
     const clamped = Math.max(0, Math.min(timeSec, totalDuration));
     transportAnchorSecRef.current = clamped;
     transportAnchorTsRef.current = Date.now();
-    const renderedTotal = canonicalTotalDuration > 0 ? canonicalTotalDuration : totalDuration;
+    const renderedTotal = graphTotalDuration > 0 ? graphTotalDuration : totalDuration;
     const seekVisualLead = RENDER_VISUAL_LEAD_MS / 1000;
     lastVisualTimeRef.current = Math.max(
       0,
       Math.min(clamped + seekVisualLead, renderedTotal > 0 ? renderedTotal : clamped + seekVisualLead)
     );
-    lastHighlightBucketIndexRef.current = 0;
     setPlaybackTime(clamped);
 
-    if (canonicalTimeline && Number.isFinite(canonicalTimeline.totalBeats) && canonicalTimeline.totalBeats > 0) {
-      const beat = canonicalTimeline.timeToBeat(clamped, tempo);
-      renderedScoreRef.current?.syncBeat?.(beat, canonicalTimeline.totalBeats);
+    const beatTotalForRender = playbackTotalBeats;
+    if (beatTotalForRender > 0) {
+      const beat = clamped / (60 / tempo);
+      renderedScoreRef.current?.syncBeat?.(beat, beatTotalForRender);
     } else {
       renderedScoreRef.current?.syncPlayback?.(clamped, totalDuration);
     }
@@ -1447,79 +1225,81 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
   };
 
   const currentInstrumentName = availablePresets[selectedPresetIndex]?.name || 'Piano';
-  const canonicalTimeline = useMemo(() => {
-    if (!scoreData) return null;
-    return new CanonicalTimeline(scoreData);
-  }, [scoreData]);
-  const musicXmlHighlightTimeline = useMemo(() => {
-    if (preparedPlaybackEvents.length > 0) {
-      return buildHighlightTimelineFromPreparedEvents(preparedPlaybackEvents, tempo);
-    }
-    if (!scoreData) return [];
-    return buildMusicXmlHighlightTimeline(scoreData.notes, tempo);
-  }, [preparedPlaybackEvents, scoreData, tempo]);
-  const canonicalTotalDuration = useMemo(() => {
-    if (!canonicalTimeline) return 0;
-    return canonicalTimeline.totalDurationSeconds(tempo);
-  }, [canonicalTimeline, tempo]);
-  const canonicalTotalBeats = useMemo(() => {
-    if (!canonicalTimeline) return 0;
-    return Number.isFinite(canonicalTimeline.totalBeats) ? canonicalTimeline.totalBeats : 0;
-  }, [canonicalTimeline]);
-  const sharedBeatOffsets = useMemo(() => {
-    if (!Array.isArray(musicXmlHighlightTimeline) || musicXmlHighlightTimeline.length === 0) return [];
-    const offsets = musicXmlHighlightTimeline
-      .filter((entry) => Number.isFinite(entry?.beatOffset) && isVoiceAllowed(effectiveVoiceSelection, entry.voice))
-      .map((entry) => entry.beatOffset);
-    if (offsets.length === 0) return [];
-    return [...new Set(offsets)].sort((a, b) => a - b);
-  }, [musicXmlHighlightTimeline, effectiveVoiceSelection]);
-  const highlightBuckets = useMemo(() => {
-    if (!Array.isArray(musicXmlHighlightTimeline) || musicXmlHighlightTimeline.length === 0) return [];
-
-    const normalizeBeat = (beat) => {
-      if (!Number.isFinite(beat)) return NaN;
-      return Math.round(beat * 1000000) / 1000000;
-    };
-
-    const filtered = musicXmlHighlightTimeline
-      .filter((entry) => entry?.elementId && Number.isFinite(entry?.beatOffset) && isVoiceAllowed(effectiveVoiceSelection, entry.voice))
-      .sort((a, b) => a.beatOffset - b.beatOffset);
-    if (filtered.length === 0) return [];
-
-    const beatToIds = new Map();
-    for (const entry of filtered) {
-      const beat = normalizeBeat(entry.beatOffset);
-      if (!Number.isFinite(beat)) continue;
-      const ids = beatToIds.get(beat) || [];
-      if (!ids.includes(entry.elementId)) {
-        ids.push(entry.elementId);
-        beatToIds.set(beat, ids);
+  const timepointGraph = useMemo(() => {
+    return Array.isArray(preparedTimepointGraph) ? preparedTimepointGraph : [];
+  }, [preparedTimepointGraph]);
+  const graphTotalBeats = useMemo(() => {
+    if (!Array.isArray(timepointGraph) || timepointGraph.length === 0) return 0;
+    let maxBeat = 0;
+    for (const tp of timepointGraph) {
+      const base = Number.isFinite(tp?.beatOffset) ? tp.beatOffset : 0;
+      const barEnd = Number.isFinite(tp?.barEndBeat) ? tp.barEndBeat : null;
+      maxBeat = Math.max(maxBeat, base);
+      if (Number.isFinite(barEnd)) {
+        maxBeat = Math.max(maxBeat, barEnd);
       }
     }
-
-    const beats = sharedBeatOffsets.length > 0
-      ? sharedBeatOffsets.map(normalizeBeat).filter((b) => Number.isFinite(b) && beatToIds.has(b))
-      : [...beatToIds.keys()].sort((a, b) => a - b);
-
-    return beats.map((beatOffset) => ({ beatOffset, elementIds: beatToIds.get(beatOffset) || [] }));
-  }, [musicXmlHighlightTimeline, effectiveVoiceSelection, sharedBeatOffsets]);
-  const sharedBeatOffsetsForAudio = useMemo(
-    () => highlightBuckets.map((bucket) => bucket.beatOffset),
-    [highlightBuckets]
-  );
+    return maxBeat;
+  }, [timepointGraph]);
+  const graphTotalDuration = useMemo(() => {
+    if (!Number.isFinite(graphTotalBeats) || graphTotalBeats <= 0) return 0;
+    return graphTotalBeats * (60 / tempo);
+  }, [graphTotalBeats, tempo]);
+  const playbackTotalBeats = useMemo(() => {
+    if (Number.isFinite(totalDuration) && totalDuration > 0 && Number.isFinite(tempo) && tempo > 0) {
+      return totalDuration / (60 / tempo);
+    }
+    if (Number.isFinite(preparedTotalBeats) && preparedTotalBeats > 0) {
+      return preparedTotalBeats;
+    }
+    if (Number.isFinite(graphTotalBeats) && graphTotalBeats > 0) {
+      return graphTotalBeats;
+    }
+    return 0;
+  }, [totalDuration, tempo, preparedTotalBeats, graphTotalBeats]);
+  const sharedBeatOffsets = useMemo(() => {
+    if (!Array.isArray(timepointGraph) || timepointGraph.length === 0) return [];
+    return timepointGraph
+      .filter((tp) => (tp.sounds || []).some((s) => isVoiceAllowed(effectiveVoiceSelection, s.voice)))
+      .map((tp) => tp.beatOffset)
+      .sort((a, b) => a - b);
+  }, [timepointGraph, effectiveVoiceSelection]);
+  const highlightBuckets = useMemo(() => {
+    if (!Array.isArray(timepointGraph) || timepointGraph.length === 0) return [];
+    return timepointGraph
+      .map((tp) => {
+        const ids = [];
+        for (const s of tp.sounds || []) {
+          if (!s.elementId) continue;
+          if (!isVoiceAllowed(effectiveVoiceSelection, s.voice)) continue;
+          if (!ids.includes(s.elementId)) ids.push(s.elementId);
+        }
+        return { beatOffset: tp.beatOffset, elementIds: ids };
+      })
+      .filter((bucket) => Number.isFinite(bucket.beatOffset) && bucket.elementIds.length > 0)
+      .sort((a, b) => a.beatOffset - b.beatOffset);
+  }, [timepointGraph, effectiveVoiceSelection]);
+  const sharedBeatOffsetsForAudio = useMemo(() => {
+    return highlightBuckets.map((bucket) => bucket.beatOffset);
+  }, [highlightBuckets]);
 
   useEffect(() => {
     AudioPlaybackService.setExternalBeatGuideOnsets(sharedBeatOffsetsForAudio, {
       measureBeats: scoreData?.metadata?.measureBeats,
-      totalBeats: canonicalTotalBeats,
+      totalBeats: graphTotalBeats > 0 ? graphTotalBeats : preparedTotalBeats,
     });
-  }, [sharedBeatOffsetsForAudio, scoreData, canonicalTotalBeats]);
+  }, [sharedBeatOffsetsForAudio, scoreData, preparedTotalBeats, graphTotalBeats]);
+
+  useEffect(() => {
+    const beatTotalForRender = playbackTotalBeats;
+    if (!renderedScoreRef.current?.setHighlightBuckets) return;
+    renderedScoreRef.current.setHighlightBuckets(highlightBuckets, beatTotalForRender);
+  }, [highlightBuckets, playbackTotalBeats]);
 
   const updatePlaybackPosition = useCallback((timeSec, force = false) => {
     const audioTotal = totalDuration || timeSec || 0;
     const clamped = Math.max(0, Math.min(timeSec, audioTotal));
-    const renderedTotal = canonicalTotalDuration > 0 ? canonicalTotalDuration : totalDuration;
+    const renderedTotal = graphTotalDuration > 0 ? graphTotalDuration : totalDuration;
     const atAudioEnd = audioTotal > 0 && clamped >= audioTotal - 0.02;
     const renderBaseTime =
       force && atAudioEnd && renderedTotal > 0
@@ -1538,37 +1318,13 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
       : Math.max(visualTimeSecRaw, lastVisualTimeRef.current);
     lastVisualTimeRef.current = visualTimeSec;
     const secondsPerBeat = 60 / tempo;
-    const transportBeat = clamped / secondsPerBeat;
-    const canonicalBeatForRender = canonicalTimeline
-      ? canonicalTimeline.timeToBeat(visualTimeSec, tempo)
-      : 0;
-    let activeHighlightIds = [];
-    if (highlightBuckets.length > 0) {
-      const EPS = 0.001;
-      let idx = Math.max(0, Math.min(lastHighlightBucketIndexRef.current, highlightBuckets.length - 1));
+    const beatForRender = visualTimeSec / secondsPerBeat;
 
-      if (force) {
-        idx = highlightBuckets.length - 1;
-      } else {
-        while (idx + 1 < highlightBuckets.length && highlightBuckets[idx + 1].beatOffset <= transportBeat + EPS) {
-          idx += 1;
-        }
-      }
-
-      lastHighlightBucketIndexRef.current = idx;
-      activeHighlightIds = highlightBuckets[idx]?.elementIds || [];
-    }
-
-    if (renderedScoreRef.current?.syncActiveNoteIds) {
-      renderedScoreRef.current.syncActiveNoteIds(activeHighlightIds, visualTimeSec);
-    }
-
-    if (!isPlaying) {
-      if (renderedScoreRef.current?.syncBeat && canonicalTotalBeats > 0) {
-        renderedScoreRef.current.syncBeat(canonicalBeatForRender, canonicalTotalBeats);
-      } else if (renderedScoreRef.current?.syncPlayback && renderedTotal > 0) {
-        renderedScoreRef.current.syncPlayback(visualTimeSec, renderedTotal);
-      }
+    const beatTotalForRender = playbackTotalBeats;
+    if (renderedScoreRef.current?.syncBeat && beatTotalForRender > 0) {
+      renderedScoreRef.current.syncBeat(beatForRender, beatTotalForRender);
+    } else if (renderedScoreRef.current?.syncPlayback && renderedTotal > 0) {
+      renderedScoreRef.current.syncPlayback(visualTimeSec, renderedTotal);
     }
 
     const now = Date.now();
@@ -1576,7 +1332,12 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
       lastPlaybackUiUpdateRef.current = now;
       setPlaybackTime(clamped);
     }
-  }, [totalDuration, canonicalTotalDuration, canonicalTimeline, tempo, canonicalTotalBeats, highlightBuckets, isPlaying]);
+  }, [
+    totalDuration,
+    graphTotalDuration,
+    tempo,
+    playbackTotalBeats,
+  ]);
 
   useEffect(() => {
     if (!isPlaying) return;
@@ -1612,15 +1373,14 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
     };
   }, [isPlaying, updatePlaybackPosition]);
 
-  // Compute current beat from canonical MusicXML timeline for UI components.
-  const currentBeat = canonicalTimeline
-    ? canonicalTimeline.timeToBeat(playbackTime, tempo)
-    : (totalDuration > 0 ? (playbackTime / (60 / tempo)) : 0);
+  // Compute current beat from the prepared rule-based event timeline.
+  const currentBeat = playbackTime / (60 / tempo);
   
-  // Prefer canonical progress when available; otherwise fall back to audio duration.
-  const renderProgress = canonicalTimeline
-    ? canonicalTimeline.progressFromTime(playbackTime, tempo)
+  // Prefer graph-driven progress when available; otherwise fall back to audio duration.
+  const renderProgress = (graphTotalDuration > 0)
+    ? Math.min(1, playbackTime / graphTotalDuration)
     : (totalDuration > 0 ? Math.min(1, playbackTime / totalDuration) : 0);
+  const renderedProgressProp = isPlaying ? Number.NaN : renderProgress;
 
   /* ── Render ── */
   if (processing) {
@@ -1693,41 +1453,22 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
       {/* Score view */}
       <View style={styles.viewerArea}>
         {scoreViewMode === 'rendered' ? (
-          renderEngine === 'verovio' ? (
-            <VerovioScoreView
-              ref={renderedScoreRef}
-              musicXml={scoreData?.musicXml || ''}
-              currentBeat={renderProgress}
-              playheadMode={renderedPlayheadMode}
-              playheadColor={RENDERED_HIGHLIGHT_COLORS[renderedHighlightColorIdx]}
-              renderViewPreset={renderViewPreset}
-              onPlayheadModeChange={setRenderedPlayheadMode}
-              onRenderViewPresetChange={setRenderViewPreset}
-              onPlayheadColorChange={(color) => {
-                const idx = RENDERED_HIGHLIGHT_COLORS.indexOf(color);
-                if (idx >= 0) {
-                  setRenderedHighlightColorIdx(idx);
-                }
-              }}
-            />
-          ) : (
-            <RenderedScoreView
-              ref={renderedScoreRef}
-              musicXml={scoreData?.musicXml || ''}
-              currentBeat={renderProgress}
-              playheadMode={renderedPlayheadMode}
-              playheadColor={RENDERED_HIGHLIGHT_COLORS[renderedHighlightColorIdx]}
-              renderViewPreset={renderViewPreset}
-              onPlayheadModeChange={setRenderedPlayheadMode}
-              onRenderViewPresetChange={setRenderViewPreset}
-              onPlayheadColorChange={(color) => {
-                const idx = RENDERED_HIGHLIGHT_COLORS.indexOf(color);
-                if (idx >= 0) {
-                  setRenderedHighlightColorIdx(idx);
-                }
-              }}
-            />
-          )
+          <RenderedScoreView
+            ref={renderedScoreRef}
+            musicXml={scoreData?.musicXml || ''}
+            currentBeat={renderedProgressProp}
+            playheadMode={renderedPlayheadMode}
+            playheadColor={RENDERED_HIGHLIGHT_COLORS[renderedHighlightColorIdx]}
+            renderViewPreset={renderViewPreset}
+            onPlayheadModeChange={setRenderedPlayheadMode}
+            onRenderViewPresetChange={setRenderViewPreset}
+            onPlayheadColorChange={(color) => {
+              const idx = RENDERED_HIGHLIGHT_COLORS.indexOf(color);
+              if (idx >= 0) {
+                setRenderedHighlightColorIdx(idx);
+              }
+            }}
+          />
         ) : (
           <PlaybackVisualization
             imageUri={scoreData?.processedImageUri || imageUri}
@@ -1872,30 +1613,6 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
             <Feather name="music" size={12} color={barPalette.barTextMuted} />
             <Text style={styles.pillText}>Export WAV</Text>
           </Pressable>
-
-          {scoreViewMode === 'rendered' && (
-            <Pressable
-              style={({ pressed }) => [
-                styles.zoomPill,
-                pressed && styles.pressedPill,
-                renderEngine === 'verovio' && { borderColor: barPalette.accent },
-              ]}
-              onPress={() => {
-                setRenderEngine((engine) => {
-                  const idx = RENDER_ENGINES.indexOf(engine);
-                  return RENDER_ENGINES[(idx + 1) % RENDER_ENGINES.length];
-                });
-                renderedScoreRef.current?.resetPlayback?.();
-              }}
-            >
-              <Feather
-                name={renderEngine === 'verovio' ? 'book-open' : 'file-text'}
-                size={12}
-                color={barPalette.barTextMuted}
-              />
-              <Text style={styles.pillText}>Renderer {renderEngine === 'verovio' ? 'Verovio' : 'OSMD'}</Text>
-            </Pressable>
-          )}
 
           {scoreViewMode === 'rendered' && (
             <Pressable

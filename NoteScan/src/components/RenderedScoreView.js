@@ -352,11 +352,15 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
       let lastTargetPos = 0;
       let displayedCursorRect = null;
       let cursorResetTimer = null;
+      let smoothScrollRaf = 0;
+      let smoothScrollTargetTop = null;
+      let smoothScrollEl = null;
       let playheadMode = 'both'; // 'line' | 'notes' | 'both'
       let playheadColor = '#F08A45';
       let activeGraphicalNotes = [];
       let activeElementIds = new Set();
       let graphicalNotesByElementId = new Map();
+      let highlightBuckets = [];
       let activeVoiceSelection = {
         Soprano: true,
         Alto: true,
@@ -546,6 +550,52 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
           if (normalized) next.add(normalized);
         });
         activeElementIds = next;
+      }
+
+      function setHighlightBucketsPayload(payload, totalBeats) {
+        const buckets = Array.isArray(payload) ? payload : [];
+        highlightBuckets = buckets
+          .map((bucket) => ({
+            beatOffset: Number(bucket?.beatOffset),
+            elementIds: Array.isArray(bucket?.elementIds)
+              ? bucket.elementIds
+                  .map((id) => normalizeElementId(id))
+                  .filter((id) => !!id)
+              : [],
+          }))
+          .filter((bucket) => Number.isFinite(bucket.beatOffset))
+          .sort((a, b) => a.beatOffset - b.beatOffset);
+
+        // totalBeats is passed for consistency with the native bridge API.
+        // Bucket lookup is beat-based and does not require additional scaling.
+      }
+
+      function findHighlightBucketIndexForBeat(beat) {
+        if (!Number.isFinite(beat) || !Array.isArray(highlightBuckets) || highlightBuckets.length === 0) {
+          return -1;
+        }
+        let lo = 0;
+        let hi = highlightBuckets.length - 1;
+        let ans = -1;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          if (highlightBuckets[mid].beatOffset <= beat + 0.001) {
+            ans = mid;
+            lo = mid + 1;
+          } else {
+            hi = mid - 1;
+          }
+        }
+        return ans;
+      }
+
+      function syncHighlightIdsFromCanonicalBeat(beat) {
+        const idx = findHighlightBucketIndexForBeat(beat);
+        if (idx < 0) {
+          setActiveNoteIds([]);
+          return;
+        }
+        setActiveNoteIds(highlightBuckets[idx].elementIds || []);
       }
 
       function getGraphicalNoteElementId(graphicalNote) {
@@ -820,6 +870,84 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
         }
 
         return null;
+      }
+
+      function cancelSmoothScroll() {
+        if (smoothScrollRaf) {
+          cancelAnimationFrame(smoothScrollRaf);
+          smoothScrollRaf = 0;
+        }
+      }
+
+      function requestSmoothScroll(scrollEl, targetTop, urgency = 1) {
+        if (!scrollEl || !Number.isFinite(targetTop)) return;
+
+        smoothScrollEl = scrollEl;
+        const maxScrollTop = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
+        smoothScrollTargetTop = Math.max(0, Math.min(targetTop, maxScrollTop));
+        const clampedUrgency = Math.max(1, Math.min(2.2, urgency));
+
+        if (smoothScrollRaf) return;
+
+        const step = () => {
+          if (!smoothScrollEl || !Number.isFinite(smoothScrollTargetTop)) {
+            cancelSmoothScroll();
+            return;
+          }
+
+          const current = smoothScrollEl.scrollTop;
+          const diff = smoothScrollTargetTop - current;
+          const absDiff = Math.abs(diff);
+
+          // Dead-zone avoids tiny jitter while highlights vibrate around the same y.
+          if (absDiff < 0.75) {
+            smoothScrollEl.scrollTop = smoothScrollTargetTop;
+            cancelSmoothScroll();
+            return;
+          }
+
+          const viewportHeight = Math.max(1, smoothScrollEl.clientHeight || 1);
+          const baseLerp = 0.2;
+          const lerp = Math.min(0.38, baseLerp * clampedUrgency);
+          const maxStep = viewportHeight * (0.045 + 0.03 * clampedUrgency);
+          const rawStep = diff * lerp;
+          const boundedStep = Math.max(-maxStep, Math.min(maxStep, rawStep));
+
+          smoothScrollEl.scrollTop = current + boundedStep;
+          smoothScrollRaf = requestAnimationFrame(step);
+        };
+
+        smoothScrollRaf = requestAnimationFrame(step);
+      }
+
+      function keepRectVisible(rect) {
+        if (!rect || !scoreEl || !scoreEl.parentElement) return;
+        const scrollEl = scoreEl.parentElement;
+        if (typeof scrollEl.getBoundingClientRect !== 'function') return;
+
+        try {
+          const viewportRect = scrollEl.getBoundingClientRect();
+          const viewportHeight = Math.max(1, viewportRect.height || scrollEl.clientHeight || 1);
+          const topMargin = viewportHeight * 0.22;
+          const bottomMargin = viewportHeight * 0.30;
+
+          const upperBound = viewportRect.top + topMargin;
+          const lowerBound = viewportRect.bottom - bottomMargin;
+
+          if (rect.bottom > lowerBound) {
+            const overflow = rect.bottom - lowerBound;
+            const desiredTop = scrollEl.scrollTop + overflow;
+            const urgency = 1 + Math.min(1.2, overflow / Math.max(1, viewportHeight));
+            requestSmoothScroll(scrollEl, desiredTop, urgency);
+          } else if (rect.top < upperBound) {
+            const overflow = upperBound - rect.top;
+            const desiredTop = scrollEl.scrollTop - overflow;
+            const urgency = 1 + Math.min(1.2, overflow / Math.max(1, viewportHeight));
+            requestSmoothScroll(scrollEl, desiredTop, urgency);
+          }
+        } catch (e) {
+          // Best-effort: don't interrupt rendering on scroll errors.
+        }
       }
 
       function applyVisualMode() {
@@ -1115,27 +1243,15 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
           }
 
           highlightByPositionIndex(targetPos);
-          
-          // Auto-scroll to keep cursor visible
+
+          // Auto-scroll should track the highlighted note location in notes/both modes.
+          // Cursor rect is only a fallback when note rects are unavailable.
           const cursorElForScroll = getCursorElement();
-          if (cursorElForScroll && typeof cursorElForScroll.getBBox === 'function') {
-            try {
-              const bbox = cursorElForScroll.getBBox();
-              const cursorTop = bbox.y;
-              const cursorHeight = bbox.height;
-              const viewportHeight = scoreEl.parentElement?.clientHeight || 400;
-              
-              // Scroll if cursor is near bottom or above top with some padding
-              const padding = viewportHeight * 0.2;
-              const scrollEl = scoreEl.parentElement;
-              
-              if (scrollEl && (cursorTop + cursorHeight + padding > scrollEl.scrollTop + viewportHeight ||
-                               cursorTop - padding < scrollEl.scrollTop)) {
-                scrollEl.scrollTop = Math.max(0, cursorTop - padding);
-              }
-            } catch (e) {
-              // Silently fail auto-scroll
-            }
+          const activeRect = getGraphicalNoteRect(activeGraphicalNotes, cursorElForScroll);
+          if (activeRect) {
+            keepRectVisible(activeRect);
+          } else if (cursorElForScroll && typeof cursorElForScroll.getBoundingClientRect === 'function') {
+            keepRectVisible(cursorElForScroll.getBoundingClientRect());
           }
         } catch (e) {
           post('error', String(e && e.message ? e.message : e));
@@ -1153,6 +1269,8 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
           setBeat(0);
           return;
         }
+
+        syncHighlightIdsFromCanonicalBeat(Math.max(0, beat));
         setBeat(Math.max(0, Math.min(1, beat / totalBeats)));
       }
 
@@ -1229,6 +1347,7 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
       window.__setPlayheadColor = setPlayheadColor;
       window.__setVoiceSelection = setVoiceSelection;
       window.__setActiveNoteIds = setActiveNoteIds;
+      window.__setHighlightBuckets = setHighlightBucketsPayload;
 
       async function boot() {
         if (!window.opensheetmusicdisplay || !window.opensheetmusicdisplay.OpenSheetMusicDisplay) {
@@ -1473,6 +1592,31 @@ export const RenderedScoreView = forwardRef(({ musicXml, currentBeat, playheadMo
               window.__setActiveNoteIds(${payload});
             } catch (e) {
               console.error('setActiveNoteIds error:', e);
+            }
+          }
+          true;
+        })();`
+      );
+    },
+    setHighlightBuckets: (buckets, totalBeats) => {
+      if (!webViewRef.current) return;
+      const safeBuckets = Array.isArray(buckets)
+        ? buckets.map((bucket) => ({
+            beatOffset: Number(bucket?.beatOffset),
+            elementIds: Array.isArray(bucket?.elementIds)
+              ? bucket.elementIds.filter((id) => typeof id === 'string' && id.length > 0)
+              : [],
+          }))
+        : [];
+      const payload = JSON.stringify(safeBuckets);
+      const safeTotalBeats = Number.isFinite(totalBeats) ? totalBeats : 0;
+      webViewRef.current.injectJavaScript(
+        `(function() {
+          if (window.__setHighlightBuckets && typeof window.__setHighlightBuckets === 'function') {
+            try {
+              window.__setHighlightBuckets(${payload}, ${safeTotalBeats.toFixed(6)});
+            } catch (e) {
+              console.error('setHighlightBuckets error:', e);
             }
           }
           true;

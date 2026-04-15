@@ -26,7 +26,7 @@ export function normalizeMusicXmlSoftwareTag(musicXml) {
 
 /**
  * Inject deterministic xml:id attributes into note elements when missing.
- * This gives the parser and Verovio a shared stable id space for playback highlighting.
+ * This gives the parser and renderer a shared stable id space for playback highlighting.
  */
 export function injectDeterministicNoteIds(musicXml, prefix = 'n') {
   if (typeof musicXml !== 'string' || musicXml.length === 0) {

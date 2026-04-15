@@ -99,24 +99,17 @@ const palette = {
 
 export const SettingsScreen = ({ onNavigateBack }) => {
   const [engine, setEngine] = useState(OMRSettings.getEngine());
-  const [defaultRenderer, setDefaultRenderer] = useState(OMRSettings.getDefaultRenderer());
   const [fullscreenImage, setFullscreenImage] = useState(null);
 
   React.useEffect(() => {
     OMRSettings.load().then(() => {
       setEngine(OMRSettings.getEngine());
-      setDefaultRenderer(OMRSettings.getDefaultRenderer());
     });
   }, []);
 
   const selectEngine = async (eng) => {
     await OMRSettings.setEngine(eng);
     setEngine(eng);
-  };
-
-  const selectDefaultRenderer = async (renderer) => {
-    await OMRSettings.setDefaultRenderer(renderer);
-    setDefaultRenderer(renderer);
   };
 
   const handleClearCache = async () => {
@@ -186,13 +179,13 @@ export const SettingsScreen = ({ onNavigateBack }) => {
                   {engine === 'zemsky' && <View style={styles.radioInner} />}
                 </View>
                 <Text style={[styles.engineName, engine === 'zemsky' && styles.engineNameActive]}>
-                  ZemEmu
+                  Music eye
                 </Text>
               </View>
               <Text style={styles.engineDesc}>
-                Uses the separate Android harness app to run the native ZemEmu .so OMR stack.
+                Uses the separate Music eye app to run the native OMR stack.
               </Text>
-              <Text style={styles.engineVersion}>arm64 emulator • Native .so runtime</Text>
+              <Text style={styles.engineVersion}>arm64 device • Native runtime</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -200,57 +193,11 @@ export const SettingsScreen = ({ onNavigateBack }) => {
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Feather name="smartphone" size={18} color={palette.ink} />
-            <Text style={styles.sectionTitle}>ZemEmu</Text>
+            <Text style={styles.sectionTitle}>Music eye helper</Text>
           </View>
           <Text style={styles.sectionDescription}>
-            Default endpoint: {ZemskyEmulatorService.getServerUrl()}. Run the ZemskyHarness app in the same Android emulator, then select ZemEmu here before scanning.
+            Default endpoint: {ZemskyEmulatorService.getServerUrl()}. Run the Music eye helper app on the same phone, then select Music eye here before scanning.
           </Text>
-        </View>
-
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Feather name="book-open" size={18} color={palette.ink} />
-            <Text style={styles.sectionTitle}>Default Score Renderer</Text>
-          </View>
-          <Text style={styles.sectionDescription}>
-            Choose which rendered score engine opens by default on Playback.
-          </Text>
-
-          <View style={styles.engineRow}>
-            <TouchableOpacity
-              style={[styles.engineCard, defaultRenderer === 'osmd' && styles.engineCardActive]}
-              onPress={() => selectDefaultRenderer('osmd')}
-            >
-              <View style={styles.engineHeader}>
-                <View style={[styles.radioOuter, defaultRenderer === 'osmd' && styles.radioOuterActive]}>
-                  {defaultRenderer === 'osmd' && <View style={styles.radioInner} />}
-                </View>
-                <Text style={[styles.engineName, defaultRenderer === 'osmd' && styles.engineNameActive]}>
-                  OSMD
-                </Text>
-              </View>
-              <Text style={styles.engineDesc}>
-                OpenSheetMusicDisplay rendering engine.
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.engineCard, defaultRenderer === 'verovio' && styles.engineCardActive]}
-              onPress={() => selectDefaultRenderer('verovio')}
-            >
-              <View style={styles.engineHeader}>
-                <View style={[styles.radioOuter, defaultRenderer === 'verovio' && styles.radioOuterActive]}>
-                  {defaultRenderer === 'verovio' && <View style={styles.radioInner} />}
-                </View>
-                <Text style={[styles.engineName, defaultRenderer === 'verovio' && styles.engineNameActive]}>
-                  Verovio
-                </Text>
-              </View>
-              <Text style={styles.engineDesc}>
-                Local Verovio renderer (offline runtime asset).
-              </Text>
-            </TouchableOpacity>
-          </View>
         </View>
 
         {/* Cache Management */}
@@ -276,18 +223,18 @@ export const SettingsScreen = ({ onNavigateBack }) => {
           </View>
 
           <Text style={styles.sectionDescription}>
-            Run the ZemEmu harness:
+            Run the Music eye helper app:
           </Text>
           <View style={styles.codeBlock}>
             <Text style={styles.codeText} selectable>
-              cd ZemskyHarness{'\n'}
+              open the Music eye helper app{'\n'}
               ./gradlew installDebug{'\n'}
-              adb shell am start -n com.musiceye.zemskyharness/.MainActivity
+              start the helper screen
             </Text>
           </View>
 
           <Text style={styles.hint}>
-            ZemEmu uses a separate Android app running in the same emulator as NoteScan.
+            Music eye uses a separate Android app running on the same phone as NoteScan.
           </Text>
         </View>
 

@@ -76,7 +76,7 @@ export const FileUploadScreen = ({ onNavigateBack, onFileSelected }) => {
     const instructions = FileHandlerService.getPDFInstructions();
     Alert.alert(
       'PDF Support',
-      `Music Eye scans sheet music images. To use a PDF:\n\n${instructions.join('\n')}`
+      `Music eye scans sheet music images. To use a PDF:\n\n${instructions.join('\n')}`
     );
   };
 

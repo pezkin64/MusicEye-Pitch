@@ -730,6 +730,13 @@ export class MusicXMLParser {
 
     metadata.tempo = Math.round(selectedTempo);
 
+    // Rewrite all tempo tags to use the validated tempo (fixes incorrect/broken tempos like 8 BPM from OMR)
+    let correctedMusicXml = adjustedMusicXml
+      // Fix <sound tempo="..."/>
+      .replace(/<sound[^>]*\btempo="[\d.]+"/g, `<sound tempo="${metadata.tempo}"`)
+      // Fix <per-minute>...</per-minute> inside metronome
+      .replace(/<per-minute>[\d.]+<\/per-minute>/g, `<per-minute>${metadata.tempo}</per-minute>`);
+
     console.log(
       `✅ Parsed MusicXML: ${noteCount} notes, ${restCount} rests, ` +
       `${metadata.staves} staves, ${metadata.systems} systems, ` +
@@ -739,7 +746,7 @@ export class MusicXMLParser {
       (metadata.tempo ? `\n   Tempo: ${metadata.tempo} BPM` : '')
     );
 
-    return { notes, metadata, musicXml: adjustedMusicXml };
+    return { notes, metadata, musicXml: correctedMusicXml };
   }
 
   /* ─── Internal Helpers ─── */

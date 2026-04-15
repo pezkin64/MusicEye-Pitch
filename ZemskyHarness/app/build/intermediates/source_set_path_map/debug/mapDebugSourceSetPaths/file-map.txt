@@ -25,10 +25,10 @@ com.musiceye.zemskyharness.app-appcompat-1.7.0-23 /home/codespace/.gradle/caches
 com.musiceye.zemskyharness.app-recyclerview-1.1.0-24 /home/codespace/.gradle/caches/9.2.1/transforms/deaa72e59a96636e12fb63f411142cef/transformed/recyclerview-1.1.0/res
 com.musiceye.zemskyharness.app-viewpager2-1.0.0-25 /home/codespace/.gradle/caches/9.2.1/transforms/f1908f49259e3120b721c04c6d3dd86c/transformed/viewpager2-1.0.0/res
 com.musiceye.zemskyharness.app-annotation-experimental-1.4.0-26 /home/codespace/.gradle/caches/9.2.1/transforms/f55c112f4210515a4795c8add0312fad/transformed/annotation-experimental-1.4.0/res
-com.musiceye.zemskyharness.app-pngs-27 /workspaces/music-eye-from-quantum/ZemskyHarness/app/build/generated/res/pngs/debug
-com.musiceye.zemskyharness.app-resValues-28 /workspaces/music-eye-from-quantum/ZemskyHarness/app/build/generated/res/resValues/debug
-com.musiceye.zemskyharness.app-packageDebugResources-29 /workspaces/music-eye-from-quantum/ZemskyHarness/app/build/intermediates/incremental/debug/packageDebugResources/merged.dir
-com.musiceye.zemskyharness.app-packageDebugResources-30 /workspaces/music-eye-from-quantum/ZemskyHarness/app/build/intermediates/incremental/debug/packageDebugResources/stripped.dir
-com.musiceye.zemskyharness.app-debug-31 /workspaces/music-eye-from-quantum/ZemskyHarness/app/build/intermediates/merged_res/debug/mergeDebugResources
-com.musiceye.zemskyharness.app-debug-32 /workspaces/music-eye-from-quantum/ZemskyHarness/app/src/debug/res
-com.musiceye.zemskyharness.app-main-33 /workspaces/music-eye-from-quantum/ZemskyHarness/app/src/main/res
+com.musiceye.zemskyharness.app-pngs-27 /workspaces/musiceye-osmd/ZemskyHarness/app/build/generated/res/pngs/debug
+com.musiceye.zemskyharness.app-resValues-28 /workspaces/musiceye-osmd/ZemskyHarness/app/build/generated/res/resValues/debug
+com.musiceye.zemskyharness.app-packageDebugResources-29 /workspaces/musiceye-osmd/ZemskyHarness/app/build/intermediates/incremental/debug/packageDebugResources/merged.dir
+com.musiceye.zemskyharness.app-packageDebugResources-30 /workspaces/musiceye-osmd/ZemskyHarness/app/build/intermediates/incremental/debug/packageDebugResources/stripped.dir
+com.musiceye.zemskyharness.app-debug-31 /workspaces/musiceye-osmd/ZemskyHarness/app/build/intermediates/merged_res/debug/mergeDebugResources
+com.musiceye.zemskyharness.app-debug-32 /workspaces/musiceye-osmd/ZemskyHarness/app/src/debug/res
+com.musiceye.zemskyharness.app-main-33 /workspaces/musiceye-osmd/ZemskyHarness/app/src/main/res
