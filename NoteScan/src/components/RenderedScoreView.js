@@ -355,6 +355,11 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
       let smoothScrollRaf = 0;
       let smoothScrollTargetTop = null;
       let smoothScrollEl = null;
+      let lastSeekTapTs = 0;
+      let userScrollLockUntil = 0;
+      let suppressTapUntil = 0;
+      let pointerGesture = null;
+      let touchGesture = null;
       let playheadMode = 'both'; // 'line' | 'notes' | 'both'
       let playheadColor = '#F08A45';
       let activeGraphicalNotes = [];
@@ -388,12 +393,48 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
           while (!osmd.cursor.iterator.EndReached) {
             const ts = osmd.cursor.iterator.currentTimeStamp;
             if (ts && ts.realValue !== undefined) {
+              const iterator = osmd.cursor.iterator;
+              const graphicalMeasure = iterator
+                ? (iterator.currentMeasure || iterator.CurrentMeasure || null)
+                : null;
+              const sourceMeasure = graphicalMeasure
+                ? (
+                  graphicalMeasure.parentSourceMeasure ||
+                  graphicalMeasure.ParentSourceMeasure ||
+                  graphicalMeasure.sourceMeasure ||
+                  graphicalMeasure.SourceMeasure ||
+                  null
+                )
+                : null;
+              const measureNumberRaw = sourceMeasure
+                ? (
+                  sourceMeasure.MeasureNumber ??
+                  sourceMeasure.measureNumber ??
+                  sourceMeasure.Number ??
+                  sourceMeasure.number
+                )
+                : (
+                  graphicalMeasure
+                    ? (
+                      graphicalMeasure.MeasureNumber ??
+                      graphicalMeasure.measureNumber ??
+                      graphicalMeasure.Number ??
+                      graphicalMeasure.number
+                    )
+                    : null
+                );
+              const measureNumber = Number(measureNumberRaw);
+              const measureKey = Number.isFinite(measureNumber)
+                ? String(Math.round(measureNumber))
+                : null;
+
               const cursorRect = getCursorRect();
               const glyphIds = cursorRect ? collectGlyphIdsForRect(cursorRect) : [];
               stamps.push({
                 realValue: ts.realValue,
                 position: stamps.length,
                 glyphIds,
+                measureKey,
               });
               maxRealValue = Math.max(maxRealValue, ts.realValue);
             }
@@ -402,6 +443,14 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
           // Store the max so we can normalize beat values
           if (stamps.length > 0) {
             stamps.maxRealValue = maxRealValue || 1;
+
+            const firstIndexByMeasureKey = new Map();
+            for (let i = 0; i < stamps.length; i += 1) {
+              const key = stamps[i] && typeof stamps[i].measureKey === 'string' ? stamps[i].measureKey : null;
+              if (!key || firstIndexByMeasureKey.has(key)) continue;
+              firstIndexByMeasureKey.set(key, i);
+            }
+            stamps.firstIndexByMeasureKey = firstIndexByMeasureKey;
           }
         } catch (e) {
           console.warn('Note timestamp extraction failed:', e);
@@ -879,6 +928,16 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
         }
       }
 
+      function noteUserScrollInteraction(lockMs = 450) {
+        userScrollLockUntil = Date.now() + lockMs;
+        suppressTapUntil = Math.max(suppressTapUntil, Date.now() + Math.min(650, Math.max(220, lockMs)));
+        cancelSmoothScroll();
+      }
+
+      function isUserScrollLocked() {
+        return Date.now() < userScrollLockUntil;
+      }
+
       function requestSmoothScroll(scrollEl, targetTop, urgency = 1) {
         if (!scrollEl || !Number.isFinite(targetTop)) return;
 
@@ -922,6 +981,7 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
 
       function keepRectVisible(rect) {
         if (!rect || !scoreEl || !scoreEl.parentElement) return;
+        if (isUserScrollLocked()) return;
         const scrollEl = scoreEl.parentElement;
         if (typeof scrollEl.getBoundingClientRect !== 'function') return;
 
@@ -1274,6 +1334,241 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
         setBeat(Math.max(0, Math.min(1, beat / totalBeats)));
       }
 
+      function findNearestTimestampIndexForClientPoint(clientX, clientY) {
+        if (!Array.isArray(noteTimestamps) || noteTimestamps.length === 0) return -1;
+
+        const directHitCandidates = [];
+        const entryCandidates = [];
+
+        for (let i = 0; i < noteTimestamps.length; i += 1) {
+          const entry = noteTimestamps[i];
+          if (!entry || !Array.isArray(entry.glyphIds) || entry.glyphIds.length === 0) continue;
+
+          let entryBestDist = Number.POSITIVE_INFINITY;
+          let entryBestDx = Number.POSITIVE_INFINITY;
+          let entryBestDy = Number.POSITIVE_INFINITY;
+          let hasRect = false;
+
+          for (let g = 0; g < entry.glyphIds.length; g += 1) {
+            const gid = entry.glyphIds[g];
+            const el = scoreEl.querySelector('g[data-me-gid="' + gid + '"]');
+            if (!el || typeof el.getBoundingClientRect !== 'function') continue;
+
+            try {
+              const rect = el.getBoundingClientRect();
+              if (!rect || rect.width <= 0 || rect.height <= 0) continue;
+
+              hasRect = true;
+              const cx = rect.left + (rect.width * 0.5);
+              const cy = rect.top + (rect.height * 0.5);
+              const dx = Math.abs(cx - clientX);
+              const dy = Math.abs(cy - clientY);
+              const dist = (dx * dx) + (dy * dy);
+
+              // Slightly expanded hitbox makes intentional taps more forgiving.
+              const padX = Math.max(7, rect.width * 0.33);
+              const padY = Math.max(7, rect.height * 0.33);
+              const insideX = clientX >= (rect.left - padX) && clientX <= (rect.right + padX);
+              const insideY = clientY >= (rect.top - padY) && clientY <= (rect.bottom + padY);
+              if (insideX && insideY) {
+                // Prefer targets where the tap lands closest to glyph center.
+                directHitCandidates.push({ index: i, dist, dx, dy });
+              }
+
+              if (dist < entryBestDist) {
+                entryBestDist = dist;
+                entryBestDx = dx;
+                entryBestDy = dy;
+              }
+            } catch (e) {
+              // ignore unsupported element bounds
+            }
+          }
+
+          if (hasRect) {
+            entryCandidates.push({
+              index: i,
+              dist: entryBestDist,
+              dx: entryBestDx,
+              dy: entryBestDy,
+            });
+          }
+        }
+
+        if (directHitCandidates.length > 0) {
+          directHitCandidates.sort((a, b) => a.dist - b.dist);
+          return directHitCandidates[0].index;
+        }
+
+        if (entryCandidates.length > 0) {
+          // Prefer entries on the same staff/system row as the tap before x-proximity.
+          const minDy = Math.min(...entryCandidates.map((c) => c.dy));
+          const verticalBand = Math.max(14, Math.min(54, minDy + 24));
+          const sameBand = entryCandidates.filter((c) => c.dy <= verticalBand);
+          const pool = sameBand.length > 0 ? sameBand : entryCandidates;
+
+          pool.sort((a, b) => {
+            const scoreA = (a.dy * 1.9) + (a.dx * 1.0);
+            const scoreB = (b.dy * 1.9) + (b.dx * 1.0);
+            if (scoreA !== scoreB) return scoreA - scoreB;
+            return a.dist - b.dist;
+          });
+          return pool[0].index;
+        }
+
+        // Fallback: map tap Y position to timeline index so tap always seeks.
+        try {
+          const scrollEl = scoreEl && scoreEl.parentElement ? scoreEl.parentElement : null;
+          if (scrollEl && typeof scrollEl.getBoundingClientRect === 'function') {
+            const viewportRect = scrollEl.getBoundingClientRect();
+            const yInContent = (clientY - viewportRect.top) + scrollEl.scrollTop;
+            const contentHeight = Math.max(1, scoreEl.scrollHeight || scrollEl.scrollHeight || 1);
+            const normalizedY = Math.max(0, Math.min(1, yInContent / contentHeight));
+            const approx = Math.round(normalizedY * (noteTimestamps.length - 1));
+            return Math.max(0, Math.min(noteTimestamps.length - 1, approx));
+          }
+        } catch (e) {
+          // ignore fallback failure
+        }
+
+        return -1;
+      }
+
+      function seekToTapPoint(clientX, clientY) {
+        if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return;
+        const idx = findNearestTimestampIndexForClientPoint(clientX, clientY);
+        if (idx < 0 || idx >= noteTimestamps.length) return;
+
+        let targetIdx = idx;
+        const tappedEntry = noteTimestamps[idx];
+        const measureKey = tappedEntry && typeof tappedEntry.measureKey === 'string' ? tappedEntry.measureKey : null;
+        const firstIndexByMeasureKey = noteTimestamps.firstIndexByMeasureKey;
+        if (
+          measureKey &&
+          firstIndexByMeasureKey &&
+          typeof firstIndexByMeasureKey.get === 'function'
+        ) {
+          const firstIdx = firstIndexByMeasureKey.get(measureKey);
+          if (Number.isInteger(firstIdx) && firstIdx >= 0 && firstIdx < noteTimestamps.length) {
+            targetIdx = firstIdx;
+          }
+        }
+
+        const entry = noteTimestamps[targetIdx];
+        const maxRealValue = noteTimestamps.maxRealValue || 1;
+        if (!entry || !Number.isFinite(entry.realValue) || !Number.isFinite(maxRealValue) || maxRealValue <= 0) return;
+
+        const normalizedBeat = Math.max(0, Math.min(1, entry.realValue / maxRealValue));
+        post('seekToBeat', { normalizedBeat });
+        setBeat(normalizedBeat);
+      }
+
+      function handleScoreTap(event) {
+        if (!event) return;
+        const now = Date.now();
+        if (isUserScrollLocked()) return;
+        if (now < suppressTapUntil) return;
+        if (now - lastSeekTapTs < 140) return;
+
+        let clientX = Number(event.clientX);
+        let clientY = Number(event.clientY);
+
+        if ((!Number.isFinite(clientX) || !Number.isFinite(clientY)) && event.changedTouches && event.changedTouches.length > 0) {
+          const t = event.changedTouches[0];
+          clientX = Number(t && t.clientX);
+          clientY = Number(t && t.clientY);
+        }
+
+        if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return;
+        lastSeekTapTs = now;
+        seekToTapPoint(clientX, clientY);
+      }
+
+      function handlePointerDown(event) {
+        if (!event) return;
+        pointerGesture = {
+          pointerId: event.pointerId,
+          startX: Number(event.clientX),
+          startY: Number(event.clientY),
+          moved: false,
+        };
+      }
+
+      function handlePointerMove(event) {
+        if (!event || !pointerGesture) return;
+        if (pointerGesture.pointerId !== undefined && event.pointerId !== undefined && pointerGesture.pointerId !== event.pointerId) return;
+
+        const x = Number(event.clientX);
+        const y = Number(event.clientY);
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(pointerGesture.startX) || !Number.isFinite(pointerGesture.startY)) return;
+
+        const dx = x - pointerGesture.startX;
+        const dy = y - pointerGesture.startY;
+        const movedPx = Math.hypot(dx, dy);
+        if (movedPx > 9) {
+          pointerGesture.moved = true;
+          noteUserScrollInteraction(600);
+        }
+      }
+
+      function handlePointerUp(event) {
+        if (!pointerGesture) {
+          handleScoreTap(event);
+          return;
+        }
+
+        const moved = !!pointerGesture.moved;
+        pointerGesture = null;
+        if (moved) return;
+        handleScoreTap(event);
+      }
+
+      function handlePointerCancel() {
+        pointerGesture = null;
+      }
+
+      function handleTouchStart(event) {
+        if (!event || !event.touches || event.touches.length === 0) return;
+        const t = event.touches[0];
+        touchGesture = {
+          startX: Number(t && t.clientX),
+          startY: Number(t && t.clientY),
+          moved: false,
+        };
+      }
+
+      function handleTouchMove(event) {
+        if (!touchGesture || !event || !event.touches || event.touches.length === 0) return;
+        const t = event.touches[0];
+        const x = Number(t && t.clientX);
+        const y = Number(t && t.clientY);
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(touchGesture.startX) || !Number.isFinite(touchGesture.startY)) return;
+
+        const dx = x - touchGesture.startX;
+        const dy = y - touchGesture.startY;
+        const movedPx = Math.hypot(dx, dy);
+        if (movedPx > 9) {
+          touchGesture.moved = true;
+          noteUserScrollInteraction(700);
+        }
+      }
+
+      function handleTouchEnd(event) {
+        if (!touchGesture) {
+          handleScoreTap(event);
+          return;
+        }
+
+        const moved = !!touchGesture.moved;
+        touchGesture = null;
+        if (moved) return;
+        handleScoreTap(event);
+      }
+
+      function handleTouchCancel() {
+        touchGesture = null;
+      }
+
       function resetPlayback() {
         lastBeat = 0;
         lastTargetPos = 0;
@@ -1414,6 +1709,19 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
           // Cache all note/rest timestamps for smooth positioning
           noteTimestamps = extractNoteTimestamps();
           indexGraphicalNotesByElementId();
+          const scrollEl = scoreEl.parentElement;
+          if (scrollEl) {
+            scrollEl.addEventListener('wheel', () => noteUserScrollInteraction(550), { passive: true });
+            scrollEl.addEventListener('scroll', () => noteUserScrollInteraction(420), { passive: true });
+          }
+          scoreEl.addEventListener('pointerdown', handlePointerDown, { passive: true });
+          scoreEl.addEventListener('pointermove', handlePointerMove, { passive: true });
+          scoreEl.addEventListener('pointerup', handlePointerUp, { passive: true });
+          scoreEl.addEventListener('pointercancel', handlePointerCancel, { passive: true });
+          scoreEl.addEventListener('touchstart', handleTouchStart, { passive: true });
+          scoreEl.addEventListener('touchmove', handleTouchMove, { passive: true });
+          scoreEl.addEventListener('touchend', handleTouchEnd, { passive: true });
+          scoreEl.addEventListener('touchcancel', handleTouchCancel, { passive: true });
           setPlayheadColor(playheadColor);
           setPlayheadMode(playheadMode);
           
@@ -1433,7 +1741,7 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
 </html>`;
 }
 
-export const RenderedScoreView = forwardRef(({ musicXml, currentBeat, playheadMode = 'notes', playheadColor = '#F08A45', renderViewPreset = 'fit', onPlayheadModeChange, onPlayheadColorChange, onRenderViewPresetChange }, ref) => {
+export const RenderedScoreView = forwardRef(({ musicXml, currentBeat, playheadMode = 'notes', playheadColor = '#F08A45', renderViewPreset = 'fit', showControlBar = true, onPlayheadModeChange, onPlayheadColorChange, onRenderViewPresetChange, onSeekNormalizedBeat }, ref) => {
   const webViewRef = useRef(null);
   const lastInjectedBeatRef = useRef(-1);
   const [runtimeScriptText, setRuntimeScriptText] = useState('');
@@ -1711,48 +2019,50 @@ export const RenderedScoreView = forwardRef(({ musicXml, currentBeat, playheadMo
 
   return (
     <View style={styles.container}>
-      <View style={styles.controlBar}>
-        <Pressable
-          style={({ pressed }) => [styles.controlPill, pressed && styles.pressedPill]}
-          onPress={() => {
-            if (typeof onRenderViewPresetChange === 'function') {
-              const presets = ['smart', 'fit'];
-              const idx = presets.indexOf(renderViewPreset);
-              onRenderViewPresetChange(presets[(idx + 1) % presets.length]);
-            }
-          }}
-        >
-          <Text style={styles.controlText}>View {renderViewPreset}</Text>
-        </Pressable>
+      {showControlBar && (
+        <View style={styles.controlBar}>
+          <Pressable
+            style={({ pressed }) => [styles.controlPill, pressed && styles.pressedPill]}
+            onPress={() => {
+              if (typeof onRenderViewPresetChange === 'function') {
+                const presets = ['smart', 'fit'];
+                const idx = presets.indexOf(renderViewPreset);
+                onRenderViewPresetChange(presets[(idx + 1) % presets.length]);
+              }
+            }}
+          >
+            <Text style={styles.controlText}>View {renderViewPreset}</Text>
+          </Pressable>
 
-        <Pressable
-          style={({ pressed }) => [styles.controlPill, pressed && styles.pressedPill]}
-          onPress={() => {
-            if (typeof onPlayheadModeChange === 'function') {
-              const modes = ['notes', 'both', 'line'];
-              const idx = modes.indexOf(playheadMode);
-              onPlayheadModeChange(modes[(idx + 1) % modes.length]);
-            }
-          }}
-        >
-          <Text style={styles.controlText}>Playhead {playheadMode}</Text>
-        </Pressable>
+          <Pressable
+            style={({ pressed }) => [styles.controlPill, pressed && styles.pressedPill]}
+            onPress={() => {
+              if (typeof onPlayheadModeChange === 'function') {
+                const modes = ['notes', 'both', 'line'];
+                const idx = modes.indexOf(playheadMode);
+                onPlayheadModeChange(modes[(idx + 1) % modes.length]);
+              }
+            }}
+          >
+            <Text style={styles.controlText}>Playhead {playheadMode}</Text>
+          </Pressable>
 
-        <Pressable
-          style={({ pressed }) => [styles.colorPill, pressed && styles.pressedPill]}
-          onPress={() => {
-            if (typeof onPlayheadColorChange === 'function') {
-              const colors = ['#F08A45', '#C94B1A', '#6B4226', '#8B5E3C'];
-              const idx = Math.max(0, colors.indexOf(playheadColor));
-              const nextColor = colors[(idx + 1) % colors.length];
-              console.log('Color pill tapped: current=', playheadColor, 'next=', nextColor);
-              onPlayheadColorChange(nextColor);
-            }
-          }}
-        >
-          <View style={[styles.colorSwatch, { backgroundColor: playheadColor }]} />
-        </Pressable>
-      </View>
+          <Pressable
+            style={({ pressed }) => [styles.colorPill, pressed && styles.pressedPill]}
+            onPress={() => {
+              if (typeof onPlayheadColorChange === 'function') {
+                const colors = ['#F08A45', '#C94B1A', '#6B4226', '#8B5E3C'];
+                const idx = Math.max(0, colors.indexOf(playheadColor));
+                const nextColor = colors[(idx + 1) % colors.length];
+                console.log('Color pill tapped: current=', playheadColor, 'next=', nextColor);
+                onPlayheadColorChange(nextColor);
+              }
+            }}
+          >
+            <View style={[styles.colorSwatch, { backgroundColor: playheadColor }]} />
+          </Pressable>
+        </View>
+      )}
       <WebView
         ref={webViewRef}
         originWhitelist={["*"]}
@@ -1765,7 +2075,23 @@ export const RenderedScoreView = forwardRef(({ musicXml, currentBeat, playheadMo
         startInLoadingState
         setSupportMultipleWindows={false}
         style={styles.webview}
-        onMessage={() => {}}
+        onMessage={(event) => {
+          try {
+            const raw = event?.nativeEvent?.data;
+            if (!raw || typeof raw !== 'string') return;
+            const message = JSON.parse(raw);
+            if (!message || typeof message !== 'object') return;
+
+            if (message.type === 'seekToBeat' && typeof onSeekNormalizedBeat === 'function') {
+              const normalizedBeat = Number(message?.payload?.normalizedBeat);
+              if (Number.isFinite(normalizedBeat)) {
+                onSeekNormalizedBeat(Math.max(0, Math.min(1, normalizedBeat)));
+              }
+            }
+          } catch (e) {
+            // ignore malformed webview messages
+          }
+        }}
       />
     </View>
   );

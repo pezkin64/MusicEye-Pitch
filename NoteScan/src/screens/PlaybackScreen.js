@@ -245,6 +245,9 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
 
   const [playbackTime, setPlaybackTime] = useState(0);
   const [totalDuration, setTotalDuration] = useState(0);
+  const [seekSliderValue, setSeekSliderValue] = useState(0);
+  const [isSeekSliding, setIsSeekSliding] = useState(false);
+  const [preparingStatusText, setPreparingStatusText] = useState('');
 
   // Instrument preset selection
   const [availablePresets, setAvailablePresets] = useState([]);
@@ -260,10 +263,10 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
   const [preparedPlaybackEvents, setPreparedPlaybackEvents] = useState([]);
   const [preparedTimepointGraph, setPreparedTimepointGraph] = useState([]);
   const [preparedTotalBeats, setPreparedTotalBeats] = useState(0);
-  const [clefFilter, setClefFilter] = useState('both');
   const [beatOnlyMode, setBeatOnlyMode] = useState(false);
 
   const audioFileUriRef = useRef(null);
+  const mixedVoiceSelectionKeyRef = useRef('');
   const prepareIdRef = useRef(0);
   const renderTempoRef = useRef(incomingScoreData?.metadata?.tempo || 120);
   const webAudioReadyRef = useRef(false);
@@ -277,8 +280,6 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
   const transportAnchorTsRef = useRef(0);
   const loadingBarAnim = useRef(new Animated.Value(0)).current;
   const currentScanIdRef = useRef(0);
-  const upperVoiceSelectionRef = useRef({ Soprano: true, Alto: true });
-  const lowerVoiceSelectionRef = useRef({ Tenor: true, Bass: true });
 
   const [voiceSelection, setVoiceSelection] = useState({
     Soprano: true,
@@ -288,24 +289,8 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
   });
 
   const effectiveVoiceSelection = useMemo(() => {
-    if (clefFilter === 'upper') {
-      return {
-        Soprano: !!voiceSelection.Soprano,
-        Alto: !!voiceSelection.Alto,
-        Tenor: false,
-        Bass: false,
-      };
-    }
-    if (clefFilter === 'lower') {
-      return {
-        Soprano: false,
-        Alto: false,
-        Tenor: !!voiceSelection.Tenor,
-        Bass: !!voiceSelection.Bass,
-      };
-    }
     return voiceSelection;
-  }, [voiceSelection, clefFilter]);
+  }, [voiceSelection]);
 
   const playbackVoiceSelection = useMemo(() => {
     if (!beatOnlyMode) return effectiveVoiceSelection;
@@ -318,128 +303,62 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
   }, [beatOnlyMode, effectiveVoiceSelection]);
 
   const allVisibleVoicesSelected = useMemo(() => {
-    if (clefFilter === 'upper') {
-      return !!voiceSelection.Soprano && !!voiceSelection.Alto;
-    }
-    if (clefFilter === 'lower') {
-      return !!voiceSelection.Tenor && !!voiceSelection.Bass;
-    }
     return Object.values(voiceSelection).every(Boolean);
-  }, [voiceSelection, clefFilter]);
+  }, [voiceSelection]);
+
+  const activeClefPreset = useMemo(() => {
+    const s = !!voiceSelection.Soprano;
+    const a = !!voiceSelection.Alto;
+    const t = !!voiceSelection.Tenor;
+    const b = !!voiceSelection.Bass;
+    if (s && a && t && b) return 'both';
+    if (s && a && !t && !b) return 'upper';
+    if (!s && !a && t && b) return 'lower';
+    return 'custom';
+  }, [voiceSelection]);
+
+  const getVoiceSelectionKey = useCallback((selection) => {
+    const ordered = ['Soprano', 'Alto', 'Tenor', 'Bass'];
+    return ordered.map((voice) => (selection?.[voice] ? '1' : '0')).join('');
+  }, []);
+
+  const getSelectedVoiceNames = useCallback((selection) => {
+    const ordered = ['Soprano', 'Alto', 'Tenor', 'Bass'];
+    const active = ordered.filter((voice) => !!selection?.[voice]);
+    if (active.length === 0) return 'selected voice';
+    if (active.length === 1) return active[0];
+    if (active.length === 2) return `${active[0]} and ${active[1]}`;
+    return `${active.slice(0, -1).join(', ')}, and ${active[active.length - 1]}`;
+  }, []);
 
   const commitVoiceSelection = useCallback((nextSelection) => {
     setVoiceSelection(nextSelection);
-    upperVoiceSelectionRef.current = {
-      Soprano: !!nextSelection.Soprano,
-      Alto: !!nextSelection.Alto,
-    };
-    lowerVoiceSelectionRef.current = {
-      Tenor: !!nextSelection.Tenor,
-      Bass: !!nextSelection.Bass,
-    };
   }, []);
 
   const updateVoiceSelectionForClef = useCallback((updater) => {
     setVoiceSelection((prev) => {
-      let next = { ...prev };
-
-      if (clefFilter === 'upper') {
-        const currentUpper = {
-          Soprano: !!prev.Soprano,
-          Alto: !!prev.Alto,
-        };
-        const updatedUpper = updater(currentUpper);
-        next = {
-          ...prev,
-          Soprano: !!updatedUpper.Soprano,
-          Alto: !!updatedUpper.Alto,
-        };
-      } else if (clefFilter === 'lower') {
-        const currentLower = {
-          Tenor: !!prev.Tenor,
-          Bass: !!prev.Bass,
-        };
-        const updatedLower = updater(currentLower);
-        next = {
-          ...prev,
-          Tenor: !!updatedLower.Tenor,
-          Bass: !!updatedLower.Bass,
-        };
-      } else {
-        next = updater({
-          Soprano: !!prev.Soprano,
-          Alto: !!prev.Alto,
-          Tenor: !!prev.Tenor,
-          Bass: !!prev.Bass,
-        });
-      }
-
-      upperVoiceSelectionRef.current = {
-        Soprano: !!next.Soprano,
-        Alto: !!next.Alto,
-      };
-      lowerVoiceSelectionRef.current = {
-        Tenor: !!next.Tenor,
-        Bass: !!next.Bass,
-      };
-
+      const next = updater({
+        Soprano: !!prev.Soprano,
+        Alto: !!prev.Alto,
+        Tenor: !!prev.Tenor,
+        Bass: !!prev.Bass,
+      });
       return next;
     });
-  }, [clefFilter]);
-
-  const changeClefFilter = useCallback((updater) => {
-    setClefFilter((prevFilter) => {
-      const nextFilter = typeof updater === 'function' ? updater(prevFilter) : updater;
-      if (prevFilter === nextFilter) return prevFilter;
-
-      setVoiceSelection((prevSelection) => {
-        const currentUpper = {
-          Soprano: !!prevSelection.Soprano,
-          Alto: !!prevSelection.Alto,
-        };
-        const currentLower = {
-          Tenor: !!prevSelection.Tenor,
-          Bass: !!prevSelection.Bass,
-        };
-
-        if (prevFilter === 'upper') {
-          upperVoiceSelectionRef.current = currentUpper;
-        } else if (prevFilter === 'lower') {
-          lowerVoiceSelectionRef.current = currentLower;
-        } else {
-          upperVoiceSelectionRef.current = currentUpper;
-          lowerVoiceSelectionRef.current = currentLower;
-        }
-
-        if (nextFilter === 'upper') {
-          return {
-            ...prevSelection,
-            Soprano: upperVoiceSelectionRef.current.Soprano,
-            Alto: upperVoiceSelectionRef.current.Alto,
-            Tenor: false,
-            Bass: false,
-          };
-        }
-        if (nextFilter === 'lower') {
-          return {
-            ...prevSelection,
-            Soprano: false,
-            Alto: false,
-            Tenor: lowerVoiceSelectionRef.current.Tenor,
-            Bass: lowerVoiceSelectionRef.current.Bass,
-          };
-        }
-        return {
-          Soprano: upperVoiceSelectionRef.current.Soprano,
-          Alto: upperVoiceSelectionRef.current.Alto,
-          Tenor: lowerVoiceSelectionRef.current.Tenor,
-          Bass: lowerVoiceSelectionRef.current.Bass,
-        };
-      });
-
-      return nextFilter;
-    });
   }, []);
+
+  const changeClefFilter = useCallback((nextFilter) => {
+    mixedVoiceSelectionKeyRef.current = '';
+    if (nextFilter === 'upper') {
+      commitVoiceSelection({ Soprano: true, Alto: true, Tenor: false, Bass: false });
+      return;
+    }
+    if (nextFilter === 'lower') {
+      commitVoiceSelection({ Soprano: false, Alto: false, Tenor: true, Bass: true });
+      return;
+    }
+    commitVoiceSelection({ Soprano: true, Alto: true, Tenor: true, Bass: true });
+  }, [commitVoiceSelection]);
 
   const scanningFileName = useMemo(() => {
     if (!imageUri) return 'Selected file';
@@ -785,6 +704,7 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
           // Web Audio path: note events prepared, build timing map
           AudioPlaybackService._useWebAudio = true;
           webAudioReadyRef.current = true;
+          mixedVoiceSelectionKeyRef.current = '';
           const dur = evtResult.totalBeats * (60 / tempo);
           setTotalDuration(dur);
           setPlaybackTime(0);
@@ -801,7 +721,7 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
             if (cancelled || myId !== prepareIdRef.current) return;
             if (result) {
               fallbackWavPreparedRef.current = true;
-              await doMix(myId);
+              await doMix(myId, playbackVoiceSelection);
             } else {
               throw new Error('Clean pipeline requires beatOffset timing data; legacy prepare fallback is disabled.');
             }
@@ -813,7 +733,7 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
               setTotalDuration(fallbackBeats * (60 / tempo));
             }
             setPlaybackTime(0);
-            await doMix(myId);
+            await doMix(myId, playbackVoiceSelection);
           }
         }
       } catch (e) {
@@ -829,7 +749,7 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
     doPrepare();
 
     return () => { cancelled = true; };
-  }, [scoreData, selectedPresetIndex, effectiveVoiceSelection]);
+  }, [scoreData, selectedPresetIndex]);
 
   /* ── Phase 2: Voice selection changes ── */
   /* Web Audio: voice selection is applied at play-time.                        */
@@ -848,17 +768,19 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
   }, [playbackVoiceSelection, tempo]);
 
   /** Mix pre-rendered voice buffers into a single WAV based on effective voice selection */
-  const doMix = async (myId) => {
+  const doMix = async (myId, selectionOverride = playbackVoiceSelection, statusText = 'Preparing audio...') => {
     audioFileUriRef.current = null;
+    mixedVoiceSelectionKeyRef.current = '';
     setPreparing(true);
+    setPreparingStatusText(statusText);
     try {
       // Check at least one voice has notes
-      const activeVoices = Object.entries(effectiveVoiceSelection)
+      const activeVoices = Object.entries(selectionOverride || {})
         .filter(([, v]) => v).map(([k]) => k);
       console.log(`🎵 mix [${myId}]: voices=${activeVoices.join(',')}`);
 
       const { fileUri, timingMap, totalDuration: dur } =
-        await AudioPlaybackService.mixVoiceTracks(playbackVoiceSelection);
+        await AudioPlaybackService.mixVoiceTracks(selectionOverride);
 
       if (myId !== prepareIdRef.current) {
         console.log(`🎵 mix [${myId}]: stale, abandoning`);
@@ -874,19 +796,23 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
       }
 
       audioFileUriRef.current = fileUri;
+      mixedVoiceSelectionKeyRef.current = getVoiceSelectionKey(selectionOverride);
       setTotalDuration(dur);
       setPlaybackTime(0);
 
       console.log(`✅ Audio ready [${myId}]: ${dur.toFixed(1)}s, file=${fileUri ? 'OK' : 'MISSING'}`);
+      return true;
     } catch (e) {
       console.error(`mix [${myId}] error:`, e);
       if (myId === prepareIdRef.current) {
         audioFileUriRef.current = null;
         Alert.alert('Error', 'Failed to mix audio: ' + e.message);
       }
+      return false;
     } finally {
       if (myId === prepareIdRef.current) {
         setPreparing(false);
+        setPreparingStatusText('');
       }
     }
   };
@@ -976,6 +902,17 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
         () => { setIsPlaying(false); setIsPaused(false); updatePlaybackPosition(totalDuration, true); }
       );
       return;
+    }
+
+    const desiredVoiceSelectionKey = getVoiceSelectionKey(playbackVoiceSelection);
+    if (desiredVoiceSelectionKey !== mixedVoiceSelectionKeyRef.current) {
+      const voiceLabel = getSelectedVoiceNames(playbackVoiceSelection);
+      const myId = ++prepareIdRef.current;
+      const mixed = await doMix(myId, playbackVoiceSelection, `Detecting ${voiceLabel}...`);
+      if (!mixed || !audioFileUriRef.current) {
+        setIsPlaying(false);
+        return;
+      }
     }
 
     // Non-WebAudio transport path: play pre-rendered file via expo-av
@@ -1086,6 +1023,7 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
       setIsPaused(false);
       setPlaybackTime(0);
     }
+    mixedVoiceSelectionKeyRef.current = '';
     updateVoiceSelectionForClef((prev) => {
       const next = { ...prev, [voice]: !prev[voice] };
       if (!Object.values(next).some(Boolean)) {
@@ -1104,6 +1042,7 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
       setIsPaused(false);
       setPlaybackTime(0);
     }
+    mixedVoiceSelectionKeyRef.current = '';
     updateVoiceSelectionForClef((prev) => {
       const activeCount = Object.values(prev).filter(Boolean).length;
       const onlyThisActive = prev[voice] && activeCount === 1;
@@ -1132,7 +1071,7 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
       setIsPaused(false);
       setPlaybackTime(0);
     }
-    setClefFilter('both');
+    mixedVoiceSelectionKeyRef.current = '';
     commitVoiceSelection({ Soprano: true, Alto: true, Tenor: true, Bass: true });
   };
 
@@ -1189,6 +1128,7 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
 
     try {
       setPreparing(true);
+      setPreparingStatusText('Preparing WAV export...');
       await AudioPlaybackService.stop();
       setIsPlaying(false);
       setIsPaused(false);
@@ -1221,6 +1161,7 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
       Alert.alert('Export failed', e?.message || 'Could not export WAV file.');
     } finally {
       setPreparing(false);
+      setPreparingStatusText('');
     }
   };
 
@@ -1381,6 +1322,27 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
     ? Math.min(1, playbackTime / graphTotalDuration)
     : (totalDuration > 0 ? Math.min(1, playbackTime / totalDuration) : 0);
   const renderedProgressProp = isPlaying ? Number.NaN : renderProgress;
+  const seekMaxDuration = (Number.isFinite(totalDuration) && totalDuration > 0)
+    ? totalDuration
+    : ((Number.isFinite(graphTotalDuration) && graphTotalDuration > 0) ? graphTotalDuration : 0);
+  const seekDisplayTime = isSeekSliding ? seekSliderValue : playbackTime;
+  const seekSliderRenderValue = isSeekSliding ? seekSliderValue : playbackTime;
+
+  const previewSeekCursor = useCallback((previewTimeSec) => {
+    if (scoreViewMode !== 'rendered') return;
+    if (!Number.isFinite(previewTimeSec)) return;
+
+    const renderedTotal = graphTotalDuration > 0 ? graphTotalDuration : totalDuration;
+    const clamped = Math.max(0, Math.min(previewTimeSec, renderedTotal > 0 ? renderedTotal : previewTimeSec));
+    const beatTotalForRender = playbackTotalBeats;
+
+    if (beatTotalForRender > 0) {
+      const beat = clamped / (60 / tempo);
+      renderedScoreRef.current?.syncBeat?.(beat, beatTotalForRender);
+    } else if (renderedTotal > 0) {
+      renderedScoreRef.current?.syncPlayback?.(clamped, renderedTotal);
+    }
+  }, [scoreViewMode, graphTotalDuration, totalDuration, playbackTotalBeats, tempo]);
 
   /* ── Render ── */
   if (processing) {
@@ -1450,6 +1412,75 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
         <View style={{ width: 60 }} />
       </View>
 
+      {/* Voice controls moved to top for quick access */}
+      <View style={styles.topVoiceBar}>
+        <View style={styles.topVoicePill}>
+          <Pressable
+            style={({ pressed }) => [
+              styles.topVoiceDot,
+              allVisibleVoicesSelected ? styles.topVoiceDotAll : styles.topVoiceDotInactive,
+              pressed && styles.pressedDot,
+            ]}
+            onPress={allVoicesOn}
+          >
+            <Text
+              style={[
+                styles.topVoiceDotText,
+                allVisibleVoicesSelected ? styles.topVoiceDotTextActive : styles.topVoiceDotTextInactive,
+              ]}
+            >
+              All
+            </Text>
+          </Pressable>
+          {Object.keys(voiceSelection).map((voice) => {
+            const vc = scoreData?.metadata?.voiceCounts || {};
+            const hasVoiceCounts = Object.keys(vc).length > 0;
+            const cnt = vc[voice] || 0;
+            const isEmpty = hasVoiceCounts && cnt === 0;
+            const voiceLabel =
+              voice === 'Soprano'
+                ? 'Soprano'
+                : voice === 'Alto'
+                  ? 'Alto'
+                  : voice === 'Tenor'
+                    ? 'Tenor'
+                    : voice === 'Bass'
+                      ? 'Bass'
+                      : voice;
+            return (
+              <Pressable
+                key={voice}
+                style={({ pressed }) => [
+                  styles.topVoiceDot,
+                  isEmpty
+                    ? styles.topVoiceDotEmpty
+                    : effectiveVoiceSelection[voice]
+                      ? styles.topVoiceDotActive
+                      : styles.topVoiceDotInactive,
+                  pressed && !isEmpty && styles.pressedDot,
+                ]}
+                onPress={() => (isEmpty ? null : toggleVoice(voice))}
+                onLongPress={() => (isEmpty ? null : soloVoice(voice))}
+                disabled={isEmpty}
+              >
+                <Text
+                  style={[
+                    styles.topVoiceDotText,
+                    isEmpty
+                      ? styles.topVoiceDotTextInactive
+                      : effectiveVoiceSelection[voice]
+                        ? styles.topVoiceDotTextActive
+                        : styles.topVoiceDotTextInactive,
+                  ]}
+                >
+                  {voiceLabel}{isEmpty ? ' ⊘' : ''}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      </View>
+
       {/* Score view */}
       <View style={styles.viewerArea}>
         {scoreViewMode === 'rendered' ? (
@@ -1460,6 +1491,15 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
             playheadMode={renderedPlayheadMode}
             playheadColor={RENDERED_HIGHLIGHT_COLORS[renderedHighlightColorIdx]}
             renderViewPreset={renderViewPreset}
+            showControlBar={false}
+            onSeekNormalizedBeat={(normalizedBeat) => {
+              if (!Number.isFinite(normalizedBeat)) return;
+              const seekTotal = Number.isFinite(totalDuration) && totalDuration > 0
+                ? totalDuration
+                : (Number.isFinite(graphTotalDuration) && graphTotalDuration > 0 ? graphTotalDuration : 0);
+              if (seekTotal <= 0) return;
+              handleSeek(normalizedBeat * seekTotal);
+            }}
             onPlayheadModeChange={setRenderedPlayheadMode}
             onRenderViewPresetChange={setRenderViewPreset}
             onPlayheadColorChange={(color) => {
@@ -1547,6 +1587,46 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
         </View>
       )}
 
+      {/* Timeline seek slider */}
+      <View style={styles.seekBarWrap}>
+        <View style={styles.seekBarHeader}>
+          <Text style={styles.seekBarLabel}>Timeline</Text>
+          <Text style={styles.seekBarTimeText}>
+            {formatTime(seekDisplayTime)} / {formatTime(seekMaxDuration)}
+          </Text>
+        </View>
+        <Slider
+          style={styles.seekSlider}
+          minimumValue={0}
+          maximumValue={Math.max(0.001, seekMaxDuration)}
+          value={Math.max(0, Math.min(seekSliderRenderValue, Math.max(0.001, seekMaxDuration)))}
+          onSlidingStart={() => {
+            setSeekSliderValue(Math.max(0, Math.min(playbackTime, Math.max(0.001, seekMaxDuration))));
+            setIsSeekSliding(true);
+            previewSeekCursor(playbackTime);
+          }}
+          onValueChange={(v) => {
+            if (!isSeekSliding) return;
+            const target = Math.max(0, Math.min(v, seekMaxDuration));
+            setSeekSliderValue((prev) => (Math.abs(prev - target) > 0.005 ? target : prev));
+            previewSeekCursor(target);
+          }}
+          onSlidingComplete={async (v) => {
+            const target = Math.max(0, Math.min(v, seekMaxDuration));
+            setSeekSliderValue(target);
+            previewSeekCursor(target);
+            if (seekMaxDuration > 0) {
+              await handleSeek(target);
+            }
+            setIsSeekSliding(false);
+          }}
+          disabled={seekMaxDuration <= 0}
+          minimumTrackTintColor={barPalette.accent}
+          maximumTrackTintColor={barPalette.barBorder}
+          thumbTintColor={barPalette.accent}
+        />
+      </View>
+
       {/* Transport bar */}
       <View style={styles.bottomBar}>
         <ScrollView
@@ -1556,14 +1636,18 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
         >
           {/* Play / Pause */}
           <Pressable
-            style={({ pressed }) => [styles.playPill, pressed && styles.pressedPill]}
+            style={({ pressed }) => [
+              styles.playPill,
+              isPaused && !isPlaying && styles.playPillPaused,
+              pressed && styles.pressedPill,
+            ]}
             onPress={isPlaying ? handlePause : handlePlay}
             disabled={preparing}
           >
             <Feather
               name={isPlaying ? 'pause' : 'play'}
               size={14}
-              color={barPalette.barText}
+              color={isPaused && !isPlaying ? barPalette.accent : barPalette.barText}
             />
             <Text style={styles.playPillText}>
               {preparing ? 'Preparing...' : isPlaying ? 'Pause' : isPaused ? 'Resume' : 'Play'}
@@ -1619,6 +1703,22 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
               style={({ pressed }) => [
                 styles.zoomPill,
                 pressed && styles.pressedPill,
+                renderViewPreset === 'smart' && { borderColor: barPalette.accent },
+              ]}
+              onPress={() => {
+                setRenderViewPreset((preset) => (preset === 'fit' ? 'smart' : 'fit'));
+              }}
+            >
+              <Feather name="maximize" size={12} color={barPalette.barTextMuted} />
+              <Text style={styles.pillText}>View {renderViewPreset}</Text>
+            </Pressable>
+          )}
+
+          {scoreViewMode === 'rendered' && (
+            <Pressable
+              style={({ pressed }) => [
+                styles.zoomPill,
+                pressed && styles.pressedPill,
                 renderedPlayheadMode !== 'notes' && { borderColor: barPalette.accent },
               ]}
               onPress={() => setRenderedPlayheadMode((mode) => {
@@ -1640,7 +1740,7 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
             style={({ pressed }) => [
               styles.zoomPill,
               pressed && styles.pressedPill,
-              clefFilter === 'upper' && { borderColor: barPalette.accent },
+              activeClefPreset === 'upper' && { borderColor: barPalette.accent },
             ]}
             onPress={() => changeClefFilter('upper')}
           >
@@ -1652,7 +1752,7 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
             style={({ pressed }) => [
               styles.zoomPill,
               pressed && styles.pressedPill,
-              clefFilter === 'lower' && { borderColor: barPalette.accent },
+              activeClefPreset === 'lower' && { borderColor: barPalette.accent },
             ]}
             onPress={() => changeClefFilter('lower')}
           >
@@ -1679,73 +1779,14 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
             </Text>
           </Pressable>
 
-          {/* Voice toggles: tap = solo, long press = toggle */}
-          <View style={styles.voicePill}>
-            {/* All button */}
-            <Pressable
-              style={({ pressed }) => [
-                styles.voiceDot,
-                  allVisibleVoicesSelected
-                  ? styles.voiceDotAll
-                  : styles.voiceDotInactive,
-                pressed && styles.pressedDot,
-              ]}
-              onPress={allVoicesOn}
-            >
-              <Text
-                style={[
-                  styles.voiceDotText,
-                    allVisibleVoicesSelected
-                    ? styles.voiceDotTextActive
-                    : styles.voiceDotTextInactive,
-                ]}
-              >
-                All
-              </Text>
-            </Pressable>
-            {Object.keys(voiceSelection).map((voice) => {
-              const vc = scoreData?.metadata?.voiceCounts || {};
-              const hasVoiceCounts = Object.keys(vc).length > 0;
-              const cnt = vc[voice] || 0;
-              // Only disable if we KNOW voice counts and this voice has 0 notes
-              const isEmpty = hasVoiceCounts && cnt === 0;
-              return (
-              <Pressable
-                key={voice}
-                style={({ pressed }) => [
-                  styles.voiceDot,
-                  isEmpty
-                    ? styles.voiceDotEmpty
-                    : effectiveVoiceSelection[voice]
-                      ? styles.voiceDotActive
-                      : styles.voiceDotInactive,
-                  pressed && !isEmpty && styles.pressedDot,
-                ]}
-                onPress={() => isEmpty ? null : soloVoice(voice)}
-                onLongPress={() => isEmpty ? null : toggleVoice(voice)}
-                disabled={isEmpty}
-              >
-                <Text
-                  style={[
-                    styles.voiceDotText,
-                    isEmpty
-                      ? styles.voiceDotTextInactive
-                      : effectiveVoiceSelection[voice]
-                        ? styles.voiceDotTextActive
-                        : styles.voiceDotTextInactive,
-                  ]}
-                >
-                  {voice.charAt(0)}{isEmpty ? '⊘' : ''}
-                </Text>
-              </Pressable>
-              );
-            })}
-          </View>
-
           {/* Progress indicator */}
           <View style={styles.viewPill}>
             <Text style={styles.pillText}>
-              {formatTime(playbackTime)} / {formatTime(totalDuration)}
+              {preparing && preparingStatusText
+                ? preparingStatusText
+                : isPaused && !isPlaying
+                ? `Paused • ${formatTime(playbackTime)} / ${formatTime(totalDuration)}`
+                : `${formatTime(playbackTime)} / ${formatTime(totalDuration)}`}
             </Text>
           </View>
 
@@ -1929,6 +1970,64 @@ const styles = StyleSheet.create({
   },
   title: { fontSize: 24, fontWeight: '800', color: palette.ink, letterSpacing: -0.4 },
   linkText: { fontSize: 14, color: palette.inkMuted, fontWeight: '600' },
+  topVoiceBar: {
+    paddingHorizontal: 12,
+    paddingBottom: 10,
+    backgroundColor: palette.background,
+    alignItems: 'flex-start',
+  },
+  topVoicePill: {
+    flexDirection: 'row',
+    gap: 8,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    borderWidth: 1,
+    borderColor: '#E5DFD1',
+    shadowColor: '#000',
+    shadowOpacity: 0.06,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 2,
+  },
+  topVoiceDot: {
+    minWidth: 54,
+    height: 32,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    paddingHorizontal: 10,
+  },
+  topVoiceDotActive: {
+    backgroundColor: '#F8E6DD',
+    borderColor: '#E8B39B',
+  },
+  topVoiceDotAll: {
+    backgroundColor: '#E4F1E8',
+    borderColor: '#9DC7AB',
+  },
+  topVoiceDotEmpty: {
+    backgroundColor: '#F5F3ED',
+    borderColor: '#D9D3C7',
+    opacity: 0.55,
+  },
+  topVoiceDotInactive: {
+    backgroundColor: '#FCFBF8',
+    borderColor: '#DDD6C8',
+  },
+  topVoiceDotText: {
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.1,
+  },
+  topVoiceDotTextActive: {
+    color: '#3B342F',
+  },
+  topVoiceDotTextInactive: {
+    color: '#6E675E',
+  },
   viewerArea: {
     flex: 1,
     backgroundColor: '#fff',
@@ -1992,9 +2091,39 @@ const styles = StyleSheet.create({
   tempoPresetTextActive: {
     color: barPalette.barText,
   },
+  seekBarWrap: {
+    backgroundColor: barPalette.bar,
+    paddingHorizontal: 14,
+    paddingTop: 10,
+    paddingBottom: 2,
+    borderTopWidth: 1,
+    borderTopColor: barPalette.barBorder,
+  },
+  seekBarHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 2,
+  },
+  seekBarLabel: {
+    color: barPalette.barTextMuted,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  seekBarTimeText: {
+    color: barPalette.barText,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  seekSlider: {
+    width: '100%',
+    height: 30,
+  },
   bottomBar: {
     backgroundColor: barPalette.bar,
-    paddingTop: 12,
+    paddingTop: 8,
     paddingBottom: Platform.OS === 'ios' ? 38 : 24,
     borderTopWidth: 1,
     borderTopColor: barPalette.barBorder,
@@ -2015,6 +2144,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     borderWidth: 1,
     borderColor: barPalette.barBorder,
+  },
+  playPillPaused: {
+    borderColor: barPalette.accent,
+    backgroundColor: '#332015',
   },
   playPillText: { color: barPalette.barText, fontSize: 12, fontWeight: '700' },
   zoomPill: {
