@@ -10,6 +10,7 @@ import {
   Alert,
   Animated,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { LibraryService } from '../services/LibraryService';
 
@@ -23,6 +24,7 @@ export const LibraryScreen = ({ onNavigateBack, onScoreTap }) => {
   const [entries, setEntries] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const insets = useSafeAreaInsets();
 
   useEffect(() => {
     loadLibrary();
@@ -184,7 +186,16 @@ export const LibraryScreen = ({ onNavigateBack, onScoreTap }) => {
       <StatusBar barStyle="dark-content" backgroundColor="#F9F7F1" />
 
       {/* Header */}
-      <View style={styles.header}>
+      <View
+        style={[
+          styles.header,
+          {
+            paddingTop: insets.top + 8,
+            paddingLeft: 16 + insets.left,
+            paddingRight: 16 + insets.right,
+          },
+        ]}
+      >
         <TouchableOpacity
           style={styles.backButton}
           onPress={onNavigateBack}
@@ -211,7 +222,7 @@ export const LibraryScreen = ({ onNavigateBack, onScoreTap }) => {
       ) : entries.length === 0 ? (
         renderEmptyState()
       ) : (
-        <View style={styles.content}>
+        <View style={[styles.content, { paddingLeft: 16 + insets.left, paddingRight: 16 + insets.right }]}>
           <Text style={styles.libraryStats}>
             {entries.length} score{entries.length !== 1 ? 's' : ''} in library
           </Text>
@@ -222,7 +233,7 @@ export const LibraryScreen = ({ onNavigateBack, onScoreTap }) => {
             scrollEnabled={true}
             onRefresh={handleRefresh}
             refreshing={refreshing}
-            contentContainerStyle={styles.listContent}
+            contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 20 }]}
           />
         </View>
       )}

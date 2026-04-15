@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   StatusBar,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
 import { OMRSettings } from '../services/OMRSettings';
@@ -104,8 +105,9 @@ const animatedLogoHtml = `
 </html>
 `;
 
-export const HomeScreen = ({ onNavigate, onPickFromGallery, onPickFromCamera }) => {
+export const HomeScreen = ({ onNavigate, onPickFromGallery, onPickFromCamera, goForwardState, onGoForward }) => {
   const [serverStatus, setServerStatus] = useState(null);
+  const insets = useSafeAreaInsets();
 
   useEffect(() => {
     OMRSettings.load().then(() => {
@@ -127,19 +129,36 @@ export const HomeScreen = ({ onNavigate, onPickFromGallery, onPickFromCamera }) 
     <View style={styles.container}>
       <StatusBar barStyle="dark-content" backgroundColor="#F9F7F1" />
 
-      <View style={styles.header}>
+      <View
+        style={[
+          styles.header,
+          {
+            paddingTop: insets.top + 24,
+            paddingLeft: 24 + insets.left,
+            paddingRight: 24 + insets.right,
+          },
+        ]}
+      >
         <View style={styles.headerTop}>
-          <Text style={styles.title}>Music eye</Text>
-          <View style={styles.logoWrap}>
-            <WebView
-              originWhitelist={["*"]}
-              source={{ html: animatedLogoHtml }}
-              style={styles.logoWebView}
-              scrollEnabled={false}
-              showsHorizontalScrollIndicator={false}
-              showsVerticalScrollIndicator={false}
-            />
+          <View style={styles.headerBrand}>
+            <Text style={styles.title}>Music eye</Text>
+            <View style={styles.logoWrap}>
+              <WebView
+                originWhitelist={["*"]}
+                source={{ html: animatedLogoHtml }}
+                style={styles.logoWebView}
+                scrollEnabled={false}
+                showsHorizontalScrollIndicator={false}
+                showsVerticalScrollIndicator={false}
+              />
+            </View>
           </View>
+
+          {goForwardState && typeof onGoForward === 'function' && (
+            <TouchableOpacity style={styles.goForwardTopLink} onPress={onGoForward}>
+              <Text style={styles.goForwardTopText}>Return to Score →</Text>
+            </TouchableOpacity>
+          )}
         </View>
         <Text style={styles.subtitle}>Powered by AI • scan and play in seconds</Text>
 
@@ -155,7 +174,7 @@ export const HomeScreen = ({ onNavigate, onPickFromGallery, onPickFromCamera }) 
         </TouchableOpacity>
       </View>
 
-      <View style={styles.content}>
+      <View style={[styles.content, { paddingLeft: 24 + insets.left, paddingRight: 24 + insets.right }]}>
         <View style={styles.buttonContainer}>
           {/* Scan from Camera */}
           <TouchableOpacity
@@ -204,7 +223,16 @@ export const HomeScreen = ({ onNavigate, onPickFromGallery, onPickFromCamera }) 
       </View>
 
       {/* Footer Actions */}
-      <View style={styles.footerContainer}>
+      <View
+        style={[
+          styles.footerContainer,
+          {
+            paddingBottom: Math.max(16, insets.bottom + 10),
+            paddingLeft: 24 + insets.left,
+            paddingRight: 24 + insets.right,
+          },
+        ]}
+      >
         <View style={styles.footer}>
           <TouchableOpacity
             style={styles.footerAction}
@@ -232,12 +260,16 @@ const styles = StyleSheet.create({
     backgroundColor: '#F9F7F1',
   },
   header: {
-    paddingTop: 72,
     paddingBottom: 28,
     paddingHorizontal: 24,
     gap: 8,
   },
   headerTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  headerBrand: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
@@ -287,6 +319,15 @@ const styles = StyleSheet.create({
   },
   statusText: {
     fontSize: 12,
+    color: '#6E675E',
+    fontWeight: '600',
+  },
+  goForwardTopLink: {
+    paddingVertical: 2,
+    paddingHorizontal: 2,
+  },
+  goForwardTopText: {
+    fontSize: 14,
     color: '#6E675E',
     fontWeight: '600',
   },

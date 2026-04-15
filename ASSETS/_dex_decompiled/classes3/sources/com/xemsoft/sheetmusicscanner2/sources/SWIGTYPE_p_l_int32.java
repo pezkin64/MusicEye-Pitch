@@ -1,0 +1,20 @@
+package com.xemsoft.sheetmusicscanner2.sources;
+
+public class SWIGTYPE_p_l_int32 {
+    private transient long swigCPtr;
+
+    public SWIGTYPE_p_l_int32(long j, boolean z) {
+        this.swigCPtr = j;
+    }
+
+    public SWIGTYPE_p_l_int32() {
+        this.swigCPtr = 0;
+    }
+
+    public static long getCPtr(SWIGTYPE_p_l_int32 sWIGTYPE_p_l_int32) {
+        if (sWIGTYPE_p_l_int32 == null) {
+            return 0;
+        }
+        return sWIGTYPE_p_l_int32.swigCPtr;
+    }
+}

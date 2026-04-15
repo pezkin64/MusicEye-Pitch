@@ -157,7 +157,7 @@ class SoundFontServiceClass {
    * @param {number} velocity  0-127
    * @returns {Float32Array|null}
    */
-  renderNote(midiNote, duration = 1.0, velocity = 100) {
+  renderNote(midiNote, duration = 1.0, velocity = 100, tuningCents = 0) {
     if (!this._loaded || this._zones.length === 0) return null;
 
     const zone = this._findZone(midiNote, velocity);
@@ -168,7 +168,7 @@ class SoundFontServiceClass {
     const output = new Float32Array(sampleCount);
 
     // Calculate pitch ratio: shift the sample to match the target note
-    const semitones = midiNote - zone.rootKey + (zone.tuning || 0) / 100;
+    const semitones = midiNote - zone.rootKey + (zone.tuning || 0) / 100 + (Number.isFinite(tuningCents) ? tuningCents : 0) / 100;
     const pitchRatio = Math.pow(2, semitones / 12) * (zone.sampleRate / outputRate);
 
     // Sample boundaries in the pool

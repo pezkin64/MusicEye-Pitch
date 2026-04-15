@@ -24,6 +24,8 @@ export class AudioPlaybackService {
   static _tempFileUri = null;
   static _soundFontReady = false;
   static _renderTempo = 120;
+  static _pitchHz = 440;
+  static _pitchCents = 0;
   static _noteWaveformCache = new Map();
 
   /* ─── Web Audio queue-streaming engine ─── */
@@ -57,6 +59,14 @@ export class AudioPlaybackService {
 
   static setBeatOnlyMode(enabled) {
     this._beatOnlyMode = !!enabled;
+  }
+
+  static setPitchHz(hz) {
+    const nextHz = Number.isFinite(hz) && hz > 0 ? hz : 440;
+    this._pitchHz = nextHz;
+    this._pitchCents = (Math.log(nextHz / 440.0) * 1200.0) / Math.log(2.0);
+    this._noteWaveformCache.clear();
+    this._audioBufferCache.clear();
   }
 
   static getPreparedNoteEvents() {
@@ -147,8 +157,8 @@ export class AudioPlaybackService {
 
   /* ─── Frequency helpers ─── */
 
-  static midiToFrequency(midiNote) {
-    return 440 * Math.pow(2, (midiNote - 69) / 12);
+  static midiToFrequency(midiNote, referenceHz = 440) {
+    return referenceHz * Math.pow(2, (midiNote - 69) / 12);
   }
 
   // Use high precision normalization to avoid float-key noise
@@ -251,7 +261,7 @@ export class AudioPlaybackService {
   static generatePianoNote(midiNote, duration = 1.0, velocity = 100) {
     const sampleRate = 44100;
     const neededSamples = Math.floor(sampleRate * duration);
-    const cacheKey = `${midiNote}_${velocity}`;
+    const cacheKey = `${midiNote}_${velocity}_${Math.round(this._pitchCents * 1000)}`;
     const cached = this._noteWaveformCache.get(cacheKey);
 
     if (cached && cached.length >= neededSamples) {
@@ -269,7 +279,7 @@ export class AudioPlaybackService {
     const renderDuration = duration * 1.5;
     let fullWaveform;
     if (this._soundFontReady) {
-      fullWaveform = SoundFontService.renderNote(midiNote, renderDuration, velocity);
+      fullWaveform = SoundFontService.renderNote(midiNote, renderDuration, velocity, this._pitchCents);
     }
     if (!fullWaveform) {
       fullWaveform = this._synthesizeNote(midiNote, renderDuration, velocity);
@@ -294,7 +304,7 @@ export class AudioPlaybackService {
    * Fallback waveform synthesis (used when SoundFont is unavailable).
    */
   static _synthesizeNote(midiNote, duration = 1.0, velocity = 100) {
-    const frequency = this.midiToFrequency(midiNote);
+    const frequency = this.midiToFrequency(midiNote, this._pitchHz);
     const sampleRate = 44100;
     const sampleCount = Math.floor(sampleRate * duration);
     const audioData = new Float32Array(sampleCount);
@@ -483,7 +493,7 @@ export class AudioPlaybackService {
       const y = n.y || 0;
       return {
         xmlId: n.xmlId || n.noteId || n.id || null,
-        midiNote: n.midiNote,
+        midiNote: applyTranspose(n.midiNote),
         velocity: 100,
         beatOffsetCanonical: canonicalBeatOffset,
         beatOffsetCompressed: canonicalBeatOffset,
@@ -1167,7 +1177,7 @@ export class AudioPlaybackService {
   static async preRenderVoiceTracks(notes, tempo = 120, options = {}) {
     const sampleRate = 44100;
     const secondsPerBeat = 60 / tempo;
-    const renderKey = `${this.getActivePresetIndex()}`;
+    const renderKey = `${this.getActivePresetIndex()}_${Math.round(this._pitchCents * 1000)}`;
     const measureBeats = Array.isArray(options.measureBeats) ? options.measureBeats : [];
 
     // Reuse cached note grouping data if notes haven't changed

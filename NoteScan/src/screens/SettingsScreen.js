@@ -15,6 +15,7 @@ import {
   Modal,
   Dimensions,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import { Feather } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
@@ -100,6 +101,7 @@ const palette = {
 export const SettingsScreen = ({ onNavigateBack }) => {
   const [engine, setEngine] = useState(OMRSettings.getEngine());
   const [fullscreenImage, setFullscreenImage] = useState(null);
+  const insets = useSafeAreaInsets();
 
   React.useEffect(() => {
     OMRSettings.load().then(() => {
@@ -141,7 +143,16 @@ export const SettingsScreen = ({ onNavigateBack }) => {
     >
       <StatusBar barStyle="dark-content" backgroundColor={palette.background} />
 
-      <View style={styles.header}>
+      <View
+        style={[
+          styles.header,
+          {
+            paddingTop: insets.top + 16,
+            paddingLeft: 24 + insets.left,
+            paddingRight: 24 + insets.right,
+          },
+        ]}
+      >
         <TouchableOpacity onPress={onNavigateBack}>
           <Text style={styles.linkText}>← Back</Text>
         </TouchableOpacity>
@@ -161,7 +172,13 @@ export const SettingsScreen = ({ onNavigateBack }) => {
         <View style={{ width: 68 }} />
       </View>
 
-      <ScrollView style={styles.scrollContent}>
+      <ScrollView
+        style={[
+          styles.scrollContent,
+          { paddingLeft: 24 + insets.left, paddingRight: 24 + insets.right },
+        ]}
+        contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}
+      >
         {/* OMR Engine Info */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
@@ -250,7 +267,7 @@ export const SettingsScreen = ({ onNavigateBack }) => {
       >
         <View style={styles.fullscreenOverlay}>
           <TouchableOpacity
-            style={styles.fullscreenClose}
+            style={[styles.fullscreenClose, { top: insets.top + 16, right: insets.right + 20 }]}
             onPress={() => setFullscreenImage(null)}
           >
             <Feather name="x" size={28} color="#fff" />
@@ -276,7 +293,6 @@ const styles = StyleSheet.create({
   header: {
     paddingHorizontal: 24,
     paddingBottom: 12,
-    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 0) + 20 : 56,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
@@ -530,7 +546,6 @@ const styles = StyleSheet.create({
   },
   fullscreenClose: {
     position: 'absolute',
-    top: Platform.OS === 'ios' ? 56 : (StatusBar.currentHeight || 0) + 16,
     right: 20,
     zIndex: 10,
     padding: 8,

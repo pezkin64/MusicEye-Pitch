@@ -19,6 +19,7 @@ import * as Sharing from 'expo-sharing';
 import Slider from '@react-native-community/slider';
 import { Feather } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AudioPlaybackService } from '../services/AudioPlaybackService';
 import { PlaybackVisualization } from '../components/PlaybackVisualization';
 import { RenderedScoreView } from '../components/RenderedScoreView';
@@ -229,6 +230,7 @@ function getLiteralPlaybackNotes(scoreData) {
 
 /* ─── Component ─── */
 export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEntry, onNavigateBack, onScoredSaved }) => {
+  const insets = useSafeAreaInsets();
   /* ── State ── */
   const [scoreData, setScoreData] = useState(incomingScoreData || null);
   const [scoreError, setScoreError] = useState(null);
@@ -242,6 +244,9 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
   const [tempo, setTempo] = useState(incomingScoreData?.metadata?.tempo || 120);
   const [sliderTempo, setSliderTempo] = useState(incomingScoreData?.metadata?.tempo || 120);
   const [showTempoSlider, setShowTempoSlider] = useState(false);
+  const [pitchHz, setPitchHz] = useState(440);
+  const [pitchSliderHz, setPitchSliderHz] = useState(440);
+  const [showPitchSlider, setShowPitchSlider] = useState(false);
 
   const [playbackTime, setPlaybackTime] = useState(0);
   const [totalDuration, setTotalDuration] = useState(0);
@@ -263,7 +268,6 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
   const [preparedPlaybackEvents, setPreparedPlaybackEvents] = useState([]);
   const [preparedTimepointGraph, setPreparedTimepointGraph] = useState([]);
   const [preparedTotalBeats, setPreparedTotalBeats] = useState(0);
-  const [beatOnlyMode, setBeatOnlyMode] = useState(false);
 
   const audioFileUriRef = useRef(null);
   const mixedVoiceSelectionKeyRef = useRef('');
@@ -272,6 +276,7 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
   const webAudioReadyRef = useRef(false);
   const preparedScoreRef = useRef(null);
   const fallbackWavPreparedRef = useRef(false);
+  const fallbackRenderSignatureRef = useRef('');
   const rawNoteEventsRef = useRef([]);
   const renderedScoreRef = useRef(null);
   const lastPlaybackUiUpdateRef = useRef(0);
@@ -293,14 +298,8 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
   }, [voiceSelection]);
 
   const playbackVoiceSelection = useMemo(() => {
-    if (!beatOnlyMode) return effectiveVoiceSelection;
-    return {
-      Soprano: false,
-      Alto: false,
-      Tenor: false,
-      Bass: false,
-    };
-  }, [beatOnlyMode, effectiveVoiceSelection]);
+    return effectiveVoiceSelection;
+  }, [effectiveVoiceSelection]);
 
   const allVisibleVoicesSelected = useMemo(() => {
     return Object.values(voiceSelection).every(Boolean);
@@ -373,9 +372,42 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
     }
   }, [imageUri]);
 
+  const headerTitle = useMemo(() => {
+    const raw = String(scoreData?.metadata?.title || '').trim();
+    if (!raw) return 'Score Viewer';
+
+    const normalized = raw
+      .replace(/[_-]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    if (/^scanned score/i.test(normalized)) {
+      return 'Scanned Score';
+    }
+
+    if (normalized.length > 34) {
+      return `${normalized.slice(0, 31)}...`;
+    }
+
+    return normalized;
+  }, [scoreData?.metadata?.title]);
+
   useEffect(() => {
-    AudioPlaybackService.setBeatOnlyMode(beatOnlyMode);
-  }, [beatOnlyMode]);
+    AudioPlaybackService.setPitchHz(pitchHz);
+    fallbackWavPreparedRef.current = false;
+    fallbackRenderSignatureRef.current = '';
+
+    if (isPlaying || isPaused) {
+      AudioPlaybackService.stop();
+      setIsPlaying(false);
+      setIsPaused(false);
+      setPlaybackTime(0);
+      lastVisualTimeRef.current = 0;
+      transportAnchorSecRef.current = 0;
+      transportAnchorTsRef.current = 0;
+      renderedScoreRef.current?.resetPlayback?.();
+    }
+  }, [pitchHz]);
 
   useEffect(() => {
     if (!processing) {
@@ -664,6 +696,7 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
     if (preparedScoreRef.current !== scoreData) {
       preparedScoreRef.current = scoreData;
       fallbackWavPreparedRef.current = false;
+      fallbackRenderSignatureRef.current = '';
     }
 
     AudioPlaybackService.initAudio();
@@ -708,19 +741,23 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
           const dur = evtResult.totalBeats * (60 / tempo);
           setTotalDuration(dur);
           setPlaybackTime(0);
+          fallbackRenderSignatureRef.current = '';
           console.log(`✅ Web Audio ready [${myId}]: ${dur.toFixed(1)}s, ${evtResult.noteEvents.length} events`);
         } else {
           // Legacy WAV path: render once per loaded score for basic fallback playback.
           // UI interactions (voice/tempo/preset changes) should not regenerate WAV.
           webAudioReadyRef.current = false;
           AudioPlaybackService._useWebAudio = false;
-          if (!fallbackWavPreparedRef.current) {
+          const renderSignature = `${selectedPresetIndex}|${Math.round(pitchHz * 10)}|${tempo}`;
+          const needsPreRender = !fallbackWavPreparedRef.current || fallbackRenderSignatureRef.current !== renderSignature;
+          if (needsPreRender) {
             const result = await AudioPlaybackService.preRenderVoiceTracks(playbackNotes, tempo, {
               measureBeats: scoreData?.metadata?.measureBeats,
             });
             if (cancelled || myId !== prepareIdRef.current) return;
             if (result) {
               fallbackWavPreparedRef.current = true;
+              fallbackRenderSignatureRef.current = renderSignature;
               await doMix(myId, playbackVoiceSelection);
             } else {
               throw new Error('Clean pipeline requires beatOffset timing data; legacy prepare fallback is disabled.');
@@ -749,7 +786,7 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
     doPrepare();
 
     return () => { cancelled = true; };
-  }, [scoreData, selectedPresetIndex]);
+  }, [scoreData, selectedPresetIndex, pitchHz]);
 
   /* ── Phase 2: Voice selection changes ── */
   /* Web Audio: voice selection is applied at play-time.                        */
@@ -841,31 +878,38 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
       return;
     }
 
-    // Legacy WAV fallback: do not regenerate from tempo slider changes.
-    // Keep UI timeline consistent and stop active fallback playback to avoid mismatch.
+    // Legacy WAV fallback: regenerate mixed audio at the selected tempo.
     if (isPlaying || isPaused) {
       await AudioPlaybackService.stop();
       setIsPlaying(false);
       setIsPaused(false);
     }
 
-    const fallbackBeats = graphTotalBeats > 0 ? graphTotalBeats : preparedTotalBeats;
-    if (fallbackBeats > 0) {
-      setTotalDuration(fallbackBeats * (60 / newTempo));
+    const myId = ++prepareIdRef.current;
+    const playbackNotes = getLiteralPlaybackNotes(scoreData);
+    const preRender = await AudioPlaybackService.preRenderVoiceTracks(playbackNotes, newTempo, {
+      measureBeats: scoreData?.metadata?.measureBeats,
+    });
+
+    if (!preRender || myId !== prepareIdRef.current) {
+      return;
     }
+
+    fallbackWavPreparedRef.current = true;
+    fallbackRenderSignatureRef.current = `${selectedPresetIndex}|${Math.round(pitchHz * 10)}|${newTempo}`;
     setPitchTimeline(
       ENABLE_PITCH_VIEW
         ? buildPitchTimelineFromRawEvents(rawNoteEventsRef.current, newTempo)
         : []
     );
     setPlaybackTime(0);
-    console.log(`ℹ️ Tempo changed to ${newTempo} BPM without WAV regeneration (export-only WAV mode)`);
+    await doMix(myId, playbackVoiceSelection, 'Applying tempo...');
+    console.log(`✅ Tempo changed to ${newTempo} BPM with WAV regeneration`);
   };
 
   /* ── Playback controls ── */
   const handlePlay = async () => {
     if (preparing) return;
-    AudioPlaybackService.setBeatOnlyMode(beatOnlyMode);
     AudioPlaybackService.setExternalBeatGuideOnsets(sharedBeatOffsetsForAudio, {
       measureBeats: scoreData?.metadata?.measureBeats,
       totalBeats: graphTotalBeats > 0 ? graphTotalBeats : preparedTotalBeats,
@@ -959,28 +1003,6 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
     transportAnchorSecRef.current = 0;
     transportAnchorTsRef.current = 0;
     renderedScoreRef.current?.resetPlayback?.();
-  };
-
-  const toggleBeatOnlyMode = async () => {
-    const next = !beatOnlyMode;
-    AudioPlaybackService.setBeatOnlyMode(next);
-    setBeatOnlyMode(next);
-
-    // Restart transport state so verification always begins cleanly.
-    await AudioPlaybackService.stop();
-    setIsPlaying(false);
-    setIsPaused(false);
-    setPlaybackTime(0);
-    lastVisualTimeRef.current = 0;
-    transportAnchorSecRef.current = 0;
-    transportAnchorTsRef.current = 0;
-    renderedScoreRef.current?.resetPlayback?.();
-
-    // WAV fallback needs a remixed file to reflect Beat Only mode.
-    if (!webAudioReadyRef.current && scoreData) {
-      const myId = ++prepareIdRef.current;
-      await doMix(myId);
-    }
   };
 
   const handleSeek = async (timeSec) => {
@@ -1166,6 +1188,7 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
   };
 
   const currentInstrumentName = availablePresets[selectedPresetIndex]?.name || 'Piano';
+  const pitchShiftLabel = `${Math.round(pitchHz)} Hz`;
   const timepointGraph = useMemo(() => {
     return Array.isArray(preparedTimepointGraph) ? preparedTimepointGraph : [];
   }, [preparedTimepointGraph]);
@@ -1402,18 +1425,27 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
       <StatusBar barStyle="dark-content" backgroundColor={palette.background} />
 
       {/* Header */}
-      <View style={styles.header}>
+      <View
+        style={[
+          styles.header,
+          {
+            paddingTop: insets.top + 16,
+            paddingLeft: 24 + insets.left,
+            paddingRight: 24 + insets.right,
+          },
+        ]}
+      >
         <TouchableOpacity onPress={onNavigateBack}>
           <Text style={styles.linkText}>← Back</Text>
         </TouchableOpacity>
         <Text style={styles.title}>
-          {scoreData.metadata?.title || 'Score Viewer'}
+          {headerTitle}
         </Text>
         <View style={{ width: 60 }} />
       </View>
 
       {/* Voice controls moved to top for quick access */}
-      <View style={styles.topVoiceBar}>
+      <View style={[styles.topVoiceBar, { paddingLeft: 12 + insets.left, paddingRight: 12 + insets.right }]}>
         <View style={styles.topVoicePill}>
           <Pressable
             style={({ pressed }) => [
@@ -1482,7 +1514,7 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
       </View>
 
       {/* Score view */}
-      <View style={styles.viewerArea}>
+      <View style={[styles.viewerArea, { marginLeft: 12 + insets.left, marginRight: 12 + insets.right }]}>
         {scoreViewMode === 'rendered' ? (
           <RenderedScoreView
             ref={renderedScoreRef}
@@ -1529,7 +1561,7 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
 
       {/* Tempo slider drawer */}
       {showTempoSlider && (
-        <View style={styles.tempoDrawer}>
+        <View style={[styles.tempoDrawer, { paddingLeft: 16 + insets.left, paddingRight: 16 + insets.right }]}>
           <View style={styles.tempoDrawerRow}>
             <Text style={styles.tempoDrawerLabel}>Tempo</Text>
             <Text style={styles.tempoDrawerValue}>♩ = {sliderTempo}</Text>
@@ -1587,8 +1619,64 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
         </View>
       )}
 
+      {showPitchSlider && (
+        <View style={[styles.tempoDrawer, { paddingLeft: 16 + insets.left, paddingRight: 16 + insets.right }]}>
+          <View style={styles.tempoDrawerRow}>
+            <Text style={styles.tempoDrawerLabel}>Pitch Ref</Text>
+            <Text style={styles.tempoDrawerValue}>{pitchShiftLabel}</Text>
+          </View>
+          <Slider
+            style={styles.tempoSlider}
+            minimumValue={380}
+            maximumValue={480}
+            step={1}
+            value={pitchSliderHz}
+            onValueChange={(v) => setPitchSliderHz(Math.round(v))}
+            onSlidingComplete={(v) => {
+              const nextHz = Math.max(380, Math.min(480, Math.round(v)));
+              setPitchSliderHz(nextHz);
+              if (nextHz !== pitchHz) {
+                setPitchHz(nextHz);
+              }
+            }}
+            minimumTrackTintColor={barPalette.accent}
+            maximumTrackTintColor={barPalette.barBorder}
+            thumbTintColor={barPalette.accent}
+          />
+          <View style={styles.tempoPresets}>
+            {[
+              { label: '432', hz: 432 },
+              { label: '440', hz: 440 },
+              { label: '442', hz: 442 },
+              { label: 'Baroque', hz: 415 },
+            ].map((p) => (
+              <TouchableOpacity
+                key={p.label}
+                style={[
+                  styles.tempoPresetBtn,
+                  pitchHz === p.hz && styles.tempoPresetBtnActive,
+                ]}
+                onPress={() => {
+                  setPitchSliderHz(p.hz);
+                  setPitchHz(p.hz);
+                }}
+              >
+                <Text
+                  style={[
+                    styles.tempoPresetText,
+                    pitchHz === p.hz && styles.tempoPresetTextActive,
+                  ]}
+                >
+                  {p.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+      )}
+
       {/* Timeline seek slider */}
-      <View style={styles.seekBarWrap}>
+      <View style={[styles.seekBarWrap, { paddingLeft: 14 + insets.left, paddingRight: 14 + insets.right }]}>
         <View style={styles.seekBarHeader}>
           <Text style={styles.seekBarLabel}>Timeline</Text>
           <Text style={styles.seekBarTimeText}>
@@ -1628,7 +1716,16 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
       </View>
 
       {/* Transport bar */}
-      <View style={styles.bottomBar}>
+      <View
+        style={[
+          styles.bottomBar,
+          {
+            paddingBottom: insets.bottom + 16,
+            paddingLeft: insets.left,
+            paddingRight: insets.right,
+          },
+        ]}
+      >
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
@@ -1662,23 +1759,29 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
           {/* Tempo */}
           <Pressable
             style={({ pressed }) => [styles.zoomPill, showTempoSlider && { borderColor: barPalette.accent }, pressed && styles.pressedPill]}
-            onPress={() => setShowTempoSlider((v) => !v)}
+            onPress={() => {
+              setShowPitchSlider(false);
+              setShowTempoSlider((v) => !v);
+            }}
           >
             <Feather name="activity" size={12} color={barPalette.barTextMuted} />
             <Text style={styles.pillText}>{tempo} BPM</Text>
           </Pressable>
 
-          {/* Temporary beat-only verifier */}
+          {/* Pitch reference */}
           <Pressable
             style={({ pressed }) => [
               styles.zoomPill,
-              beatOnlyMode && { borderColor: barPalette.accent },
+              showPitchSlider && { borderColor: barPalette.accent },
               pressed && styles.pressedPill,
             ]}
-            onPress={toggleBeatOnlyMode}
+            onPress={() => {
+              setShowTempoSlider(false);
+              setShowPitchSlider((v) => !v);
+            }}
           >
-            <Feather name={beatOnlyMode ? 'radio' : 'circle'} size={12} color={barPalette.barTextMuted} />
-            <Text style={styles.pillText}>{beatOnlyMode ? 'Beat Only On' : 'Beat Only'}</Text>
+            <Feather name="music" size={12} color={barPalette.barTextMuted} />
+            <Text style={styles.pillText}>Pitch {pitchShiftLabel}</Text>
           </Pressable>
 
           {/* Export MusicXML */}
@@ -1774,8 +1877,13 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
               size={12}
               color={barPalette.barTextMuted}
             />
-            <Text style={styles.pillText}>
-              {scoreViewMode === 'rendered' ? 'Rendered (Primary)' : 'Scanned (Reference)'}
+            <Text
+              style={[
+                styles.scoreModeText,
+                scoreViewMode === 'scan' && styles.scoreModeTextScan,
+              ]}
+            >
+              {scoreViewMode === 'rendered' ? 'Rendered score' : 'Scanned score'}
             </Text>
           </Pressable>
 
@@ -1825,7 +1933,7 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
         onRequestClose={() => setShowInstrumentPicker(false)}
       >
         <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
+          <View style={[styles.modalContent, { paddingBottom: insets.bottom + 16 }]}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Select Instrument</Text>
               <TouchableOpacity onPress={() => setShowInstrumentPicker(false)}>
@@ -1962,34 +2070,35 @@ const styles = StyleSheet.create({
   header: {
     paddingHorizontal: 24,
     paddingBottom: 12,
-    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 0) + 20 : 36,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     backgroundColor: palette.background,
   },
-  title: { fontSize: 24, fontWeight: '800', color: palette.ink, letterSpacing: -0.4 },
+  title: {
+    fontSize: 21,
+    fontWeight: '600',
+    color: palette.ink,
+    letterSpacing: -0.2,
+    fontFamily: Platform.OS === 'ios' ? 'Avenir Next' : 'sans-serif-medium',
+  },
   linkText: { fontSize: 14, color: palette.inkMuted, fontWeight: '600' },
   topVoiceBar: {
     paddingHorizontal: 12,
     paddingBottom: 10,
+    paddingTop: 8,
     backgroundColor: palette.background,
     alignItems: 'flex-start',
   },
   topVoicePill: {
     flexDirection: 'row',
-    gap: 8,
+    gap: 6,
     backgroundColor: '#FFFFFF',
     borderRadius: 14,
     paddingVertical: 8,
     paddingHorizontal: 8,
     borderWidth: 1,
-    borderColor: '#E5DFD1',
-    shadowColor: '#000',
-    shadowOpacity: 0.06,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 3 },
-    elevation: 2,
+    borderColor: '#E4DACB',
   },
   topVoiceDot: {
     minWidth: 54,
@@ -2001,29 +2110,29 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
   },
   topVoiceDotActive: {
-    backgroundColor: '#F8E6DD',
-    borderColor: '#E8B39B',
+    backgroundColor: '#F3EBDE',
+    borderColor: '#D2BFA3',
   },
   topVoiceDotAll: {
-    backgroundColor: '#E4F1E8',
-    borderColor: '#9DC7AB',
+    backgroundColor: '#EEF3EB',
+    borderColor: '#B8C7B4',
   },
   topVoiceDotEmpty: {
-    backgroundColor: '#F5F3ED',
-    borderColor: '#D9D3C7',
+    backgroundColor: '#FAF8F3',
+    borderColor: '#E0D7C8',
     opacity: 0.55,
   },
   topVoiceDotInactive: {
-    backgroundColor: '#FCFBF8',
-    borderColor: '#DDD6C8',
+    backgroundColor: '#FFFEFC',
+    borderColor: '#E8DDCD',
   },
   topVoiceDotText: {
     fontSize: 12,
     fontWeight: '700',
-    letterSpacing: 0.1,
+    letterSpacing: 0.15,
   },
   topVoiceDotTextActive: {
-    color: '#3B342F',
+    color: '#3E3C37',
   },
   topVoiceDotTextInactive: {
     color: '#6E675E',
@@ -2124,7 +2233,6 @@ const styles = StyleSheet.create({
   bottomBar: {
     backgroundColor: barPalette.bar,
     paddingTop: 8,
-    paddingBottom: Platform.OS === 'ios' ? 38 : 24,
     borderTopWidth: 1,
     borderTopColor: barPalette.barBorder,
   },
@@ -2162,6 +2270,16 @@ const styles = StyleSheet.create({
     borderColor: barPalette.barBorder,
   },
   pillText: { color: barPalette.barText, fontSize: 12, fontWeight: '600' },
+  scoreModeText: {
+    color: '#DED8CC',
+    fontSize: 12,
+    fontWeight: '500',
+    letterSpacing: 0.2,
+    fontFamily: Platform.OS === 'ios' ? 'Avenir Next' : 'sans-serif-medium',
+  },
+  scoreModeTextScan: {
+    color: '#F2ECE0',
+  },
   voicePill: {
     flexDirection: 'row',
     gap: 6,
@@ -2224,7 +2342,6 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     maxHeight: '60%',
-    paddingBottom: Platform.OS === 'ios' ? 34 : 16,
   },
   modalHeader: {
     flexDirection: 'row',

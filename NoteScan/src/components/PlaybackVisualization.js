@@ -7,6 +7,7 @@ import {
   ScrollView,
   Pressable,
   TouchableOpacity,
+  Platform,
 } from 'react-native';
 
 const ACCENT = '#E05A2A';
@@ -823,7 +824,7 @@ export const PlaybackVisualization = ({
                       }}
                       pointerEvents="none"
                     >
-                      <Text style={{ fontSize: 7, fontWeight: '700', color }}>{n.pitch}</Text>
+                      <Text style={styles.notePitchLabel}>{n.pitch}</Text>
                     </View>
                   );
                 });
@@ -915,10 +916,11 @@ const styles = StyleSheet.create({
     overflow: 'visible',
   },
   solfegeLabel: {
-    fontSize: 9,
-    fontWeight: '800',
+    fontSize: 8.5,
+    fontWeight: '600',
     textAlign: 'center',
-    letterSpacing: 0.3,
+    letterSpacing: 0.2,
+    fontFamily: Platform.OS === 'ios' ? 'Avenir Next' : 'sans-serif-medium',
   },
   /* ─── Sheet area ─── */
   scrollView: {
@@ -1011,5 +1013,12 @@ const styles = StyleSheet.create({
   noImageText: {
     fontSize: 14,
     color: '#999',
+  },
+  notePitchLabel: {
+    fontSize: 7,
+    fontWeight: '500',
+    color: '#60584E',
+    letterSpacing: 0.15,
+    fontFamily: Platform.OS === 'ios' ? 'Avenir Next' : 'sans-serif-medium',
   },
 });

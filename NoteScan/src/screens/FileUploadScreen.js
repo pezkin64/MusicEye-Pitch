@@ -9,6 +9,7 @@ import {
   Alert,
   ScrollView,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { FileHandlerService } from '../services/FileHandlerService';
@@ -19,6 +20,7 @@ import { FileHandlerService } from '../services/FileHandlerService';
  */
 export const FileUploadScreen = ({ onNavigateBack, onFileSelected }) => {
   const [isLoading, setIsLoading] = useState(false);
+  const insets = useSafeAreaInsets();
 
   const pickImageFile = async () => {
     try {
@@ -84,7 +86,16 @@ export const FileUploadScreen = ({ onNavigateBack, onFileSelected }) => {
     <View style={styles.container}>
       <StatusBar barStyle="dark-content" backgroundColor="#F9F7F1" />
 
-      <View style={styles.header}>
+      <View
+        style={[
+          styles.header,
+          {
+            paddingTop: insets.top + 8,
+            paddingLeft: 16 + insets.left,
+            paddingRight: 16 + insets.right,
+          },
+        ]}
+      >
         <TouchableOpacity style={styles.backButton} onPress={onNavigateBack}>
           <Feather name="arrow-left" size={24} color="#3E3C37" />
         </TouchableOpacity>
@@ -92,7 +103,13 @@ export const FileUploadScreen = ({ onNavigateBack, onFileSelected }) => {
         <View style={{ width: 40 }} />
       </View>
 
-      <ScrollView style={styles.content} contentContainerStyle={{ flexGrow: 1, justifyContent: 'center' }}>
+      <ScrollView
+        style={[
+          styles.content,
+          { paddingLeft: 24 + insets.left, paddingRight: 24 + insets.right },
+        ]}
+        contentContainerStyle={{ flexGrow: 1, justifyContent: 'center' }}
+      >
         <View style={styles.illustrationContainer}>
           <Feather name="image" size={64} color="#9B967B" style={{ marginBottom: 16 }} />
           <Text style={styles.instructionTitle}>Pick Sheet Music Image</Text>
@@ -116,7 +133,16 @@ export const FileUploadScreen = ({ onNavigateBack, onFileSelected }) => {
         </View>
       </ScrollView>
 
-      <View style={styles.footer}>
+      <View
+        style={[
+          styles.footer,
+          {
+            paddingBottom: insets.bottom + 16,
+            paddingLeft: 24 + insets.left,
+            paddingRight: 24 + insets.right,
+          },
+        ]}
+      >
         <TouchableOpacity style={styles.browseButton} onPress={pickImageFile} disabled={isLoading}>
           {isLoading ? (
             <ActivityIndicator size="small" color="#FBFAF5" />
