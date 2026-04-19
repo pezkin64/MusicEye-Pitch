@@ -165,12 +165,13 @@ function estimatePresetZoom(musicXml, renderViewPreset = 'fit') {
     return 0.76;
   }
 
-  if (density >= 240) return 0.62;
-  if (density >= 180) return 0.66;
-  if (density >= 130) return 0.70;
-  if (density >= 95) return 0.74;
-  if (density >= 65) return 0.78;
-  return 0.82;
+  // Smart mode is a focused reading mode: larger notation and fewer crowded systems.
+  if (density >= 240) return 0.78;
+  if (density >= 180) return 0.84;
+  if (density >= 130) return 0.90;
+  if (density >= 95) return 0.96;
+  if (density >= 65) return 1.02;
+  return 1.08;
 }
 
 function getPresetLayoutSettings(renderViewPreset = 'fit') {
@@ -194,20 +195,30 @@ function getPresetLayoutSettings(renderViewPreset = 'fit') {
     };
   }
   return {
-    drawingParameters: 'compact',
-    minComfortZoom: 0.66,
-    overflowTolerance: 1.1,
-    fitPasses: 1,
-    fitBias: 1.05,
-    notationFontScale: 35,
-    staffDistance: 7.8,
-    betweenStaffDistance: 6.2,
-    minSkyBottomDistBetweenSystems: 2.8,
-    minDistanceBetweenSystems: 2.8,
-    voiceSpacingMultiplierVexflow: 0.94,
-    voiceSpacingAddendVexflow: 4.0,
-    measureXSpacingFactor: 1.03,
+    drawingParameters: 'default',
+    minComfortZoom: 0.82,
+    overflowTolerance: 1.42,
+    fitPasses: 0,
+    fitBias: 1.0,
+    notationFontScale: 39,
+    staffDistance: 10.2,
+    betweenStaffDistance: 8.2,
+    minSkyBottomDistBetweenSystems: 4.1,
+    minDistanceBetweenSystems: 4.0,
+    voiceSpacingMultiplierVexflow: 1.12,
+    voiceSpacingAddendVexflow: 9.4,
+    measureXSpacingFactor: 1.32,
   };
+}
+
+function prepareXmlForPreset(musicXml, renderViewPreset = 'fit') {
+  const preset = normalizeRenderPreset(renderViewPreset);
+  if (preset === 'smart') {
+    // Keep a score-reader feeling in smart mode by honoring section landmarks.
+    return forceSmartSystemBreaks(musicXml);
+  }
+  // Fit mode stays dense and overview-oriented.
+  return stripSystemBreakHints(musicXml);
 }
 
 function hasSmartSectionLabel(measureBody) {
@@ -252,14 +263,18 @@ function stripSystemBreakHints(musicXml) {
 }
 
 function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '', allowCdnFallback = false) {
+  const preset = normalizeRenderPreset(renderViewPreset);
   const groupedXml = ensurePartGroupingForPairedStaves(musicXml || '');
   const voiceNormalizedXml = normalizeVoicesByStaff(groupedXml);
-  // Remove explicit break hints from noisy OMR output so OSMD can compute
-  // consistent multi-staff alignment for treble and bass.
-  const preparedXml = stripSystemBreakHints(voiceNormalizedXml);
+  // Apply preset-specific preparation: fit prefers dense overview, smart prefers guided sections.
+  const preparedXml = prepareXmlForPreset(voiceNormalizedXml, preset);
   const xml = JSON.stringify(preparedXml);
-  const renderZoom = estimatePresetZoom(preparedXml, renderViewPreset);
-  const layoutSettings = getPresetLayoutSettings(renderViewPreset);
+  const renderZoom = estimatePresetZoom(preparedXml, preset);
+  const layoutSettings = getPresetLayoutSettings(preset);
+  const scorePadding = preset === 'smart' ? '10px 6px 20px' : '4px 0 10px';
+  const minGestureZoom = preset === 'smart' ? 0.34 : 0.5;
+  const maxGestureZoom = preset === 'smart' ? 1.8 : 1.25;
+  const initialRenderZoom = preset === 'smart' ? minGestureZoom : (renderZoom * 0.95);
   const drawPartStructure = hasPartGroups(preparedXml) || hasPartNames(preparedXml);
   const escapedRuntimeScript = typeof osmdRuntimeScriptText === 'string' && osmdRuntimeScriptText.length > 100
     ? osmdRuntimeScriptText.replace(/<\/script/gi, '<\\/script')
@@ -273,7 +288,7 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
 <html>
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=0.9, maximum-scale=3, user-scalable=yes" />
+  <meta name="viewport" content="width=device-width, initial-scale=0.9, minimum-scale=0.2, maximum-scale=3, user-scalable=yes" />
   <style>
     html, body {
       margin: 0;
@@ -288,7 +303,7 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
       width: 100%;
       min-height: 100%;
       box-sizing: border-box;
-      padding: 4px 0 10px;
+      padding: ${scorePadding};
       background: #f9f7f1;
     }
     #score svg {
@@ -343,6 +358,8 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
     (function () {
       const xml = ${xml};
       const renderZoom = ${renderZoom};
+      const initialRenderZoom = ${initialRenderZoom};
+      const renderPreset = '${preset}';
       const layoutSettings = ${JSON.stringify(layoutSettings)};
       const scoreEl = document.getElementById('score');
       let osmd = null;
@@ -360,12 +377,17 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
       let suppressTapUntil = 0;
       let pointerGesture = null;
       let touchGesture = null;
+      let pinchGesture = null;
+      let pinchPreviewZoom = null;
       let playheadMode = 'both'; // 'line' | 'notes' | 'both'
       let playheadColor = '#F08A45';
+      let playheadNoteColor = '#C94B1A';
       let activeGraphicalNotes = [];
       let activeElementIds = new Set();
       let graphicalNotesByElementId = new Map();
       let highlightBuckets = [];
+      const MIN_GESTURE_ZOOM = ${minGestureZoom};
+      const MAX_GESTURE_ZOOM = ${maxGestureZoom};
       let activeVoiceSelection = {
         Soprano: true,
         Alto: true,
@@ -881,7 +903,7 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
 
         let applied = false;
         nextNotes.forEach((graphicalNote) => {
-          applied = applyGraphicalNoteColor(graphicalNote, playheadColor) || applied;
+          applied = applyGraphicalNoteColor(graphicalNote, playheadNoteColor) || applied;
         });
 
         activeGraphicalNotes = nextNotes;
@@ -932,6 +954,57 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
         userScrollLockUntil = Date.now() + lockMs;
         suppressTapUntil = Math.max(suppressTapUntil, Date.now() + Math.min(650, Math.max(220, lockMs)));
         cancelSmoothScroll();
+      }
+
+      function clampGestureZoom(zoom) {
+        if (!Number.isFinite(zoom)) return null;
+        return Math.max(MIN_GESTURE_ZOOM, Math.min(MAX_GESTURE_ZOOM, zoom));
+      }
+
+      function getTouchDistance(touchA, touchB) {
+        if (!touchA || !touchB) return 0;
+        const dx = Number(touchA.clientX) - Number(touchB.clientX);
+        const dy = Number(touchA.clientY) - Number(touchB.clientY);
+        if (!Number.isFinite(dx) || !Number.isFinite(dy)) return 0;
+        return Math.hypot(dx, dy);
+      }
+
+      function clearPinchPreview() {
+        if (!scoreEl) return;
+        scoreEl.style.transform = 'none';
+        scoreEl.style.transformOrigin = 'center top';
+        scoreEl.style.willChange = 'auto';
+      }
+
+      function previewPinchZoom(nextZoom) {
+        const clamped = clampGestureZoom(nextZoom);
+        if (!Number.isFinite(clamped) || !scoreEl) return;
+
+        const baseZoom = Number.isFinite(osmd && osmd.Zoom) ? osmd.Zoom : (renderZoom * 0.95);
+        const scale = clamped / Math.max(0.0001, baseZoom);
+        pinchPreviewZoom = clamped;
+
+        scoreEl.style.transformOrigin = 'center top';
+        scoreEl.style.willChange = 'transform';
+        scoreEl.style.transform = 'scale(' + Math.max(0.2, Math.min(2.2, scale)).toFixed(4) + ')';
+      }
+
+      async function commitPinchZoom() {
+        const targetZoom = pinchPreviewZoom;
+        pinchPreviewZoom = null;
+        clearPinchPreview();
+        if (!Number.isFinite(targetZoom) || !osmd) return;
+        if (Math.abs((osmd.Zoom || 0) - targetZoom) < 0.006) return;
+
+        try {
+          osmd.Zoom = targetZoom;
+          await osmd.render();
+          noteTimestamps = extractNoteTimestamps();
+          indexGraphicalNotesByElementId();
+          setBeat(lastBeat || 0);
+        } catch (e) {
+          // Keep score interactive even if the commit render fails.
+        }
       }
 
       function isUserScrollLocked() {
@@ -1012,16 +1085,17 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
 
       function applyVisualMode() {
         const cursor = getCursorElement();
+        const lineHidden = playheadColor === 'none';
         scoreEl.classList.toggle('playhead-notes', playheadMode === 'notes');
         if (cursor) {
-          if (playheadMode === 'notes') {
+          if (playheadMode === 'notes' || lineHidden) {
             cursor.style.opacity = '0';
             cursor.style.visibility = 'hidden';
             cursor.style.display = 'none';
           } else if (playheadMode === 'both') {
             cursor.style.display = '';
             cursor.style.visibility = 'visible';
-            cursor.style.opacity = '0.18';
+            cursor.style.opacity = '0.58';
           } else {
             cursor.style.display = '';
             cursor.style.visibility = 'visible';
@@ -1039,16 +1113,17 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
       function syncOsmdImageCursor() {
         const cursorImg = getOsmdImageCursorElement();
         const osmdCursor = osmd && osmd.cursor ? osmd.cursor : null;
+        const lineHidden = playheadColor === 'none';
         if (!osmdCursor) {
           if (cursorImg) {
-            if (playheadMode === 'notes') {
+            if (playheadMode === 'notes' || lineHidden) {
               cursorImg.style.display = 'none';
               cursorImg.style.visibility = 'hidden';
               cursorImg.style.opacity = '0';
             } else if (playheadMode === 'both') {
               cursorImg.style.display = '';
               cursorImg.style.visibility = 'visible';
-              cursorImg.style.opacity = '0.18';
+              cursorImg.style.opacity = '0.58';
             } else {
               cursorImg.style.display = '';
               cursorImg.style.visibility = 'visible';
@@ -1062,8 +1137,8 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
           const currentOptions = osmdCursor.CursorOptions || {};
           const nextOptions = {
             ...currentOptions,
-            color: playheadColor,
-            alpha: playheadMode === 'both' ? 0.18 : 1,
+            color: lineHidden ? '#000000' : playheadColor,
+            alpha: lineHidden ? 0 : (playheadMode === 'both' ? 0.58 : 1),
           };
 
           osmdCursor.CursorOptions = nextOptions;
@@ -1077,14 +1152,14 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
           }
 
           if (targetCursor) {
-            if (playheadMode === 'notes') {
+            if (playheadMode === 'notes' || lineHidden) {
               targetCursor.style.display = 'none';
               targetCursor.style.visibility = 'hidden';
               targetCursor.style.opacity = '0';
             } else if (playheadMode === 'both') {
               targetCursor.style.display = '';
               targetCursor.style.visibility = 'visible';
-              targetCursor.style.opacity = '0.18';
+              targetCursor.style.opacity = '0.58';
             } else {
               targetCursor.style.display = '';
               targetCursor.style.visibility = 'visible';
@@ -1109,9 +1184,10 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
       function setPlayheadColor(color) {
         if (typeof color !== 'string' || color.length < 4) return;
         playheadColor = color;
-        document.documentElement.style.setProperty('--playhead-color', playheadColor);
+        const cursorColor = playheadColor === 'none' ? '#000000' : playheadColor;
+        document.documentElement.style.setProperty('--playhead-color', cursorColor);
 
-        const hex = playheadColor.replace('#', '');
+        const hex = cursorColor.replace('#', '');
         if (hex.length === 6) {
           const r = parseInt(hex.slice(0, 2), 16);
           const g = parseInt(hex.slice(2, 4), 16);
@@ -1126,8 +1202,8 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
         // to style.stroke/style.fill is ignored by the browser.
         const cursorEls = scoreEl.querySelectorAll('.osmd-cursor, .osmd-cursor line, .osmd-cursor path, .osmd-cursor rect');
         cursorEls.forEach((el) => {
-          el.style.setProperty('stroke', playheadColor, 'important');
-          el.setAttribute('stroke', playheadColor);
+          el.style.setProperty('stroke', cursorColor, 'important');
+          el.setAttribute('stroke', cursorColor);
           // Remove any fill that can force legacy green cursor rectangles.
           const tag = el.tagName.toLowerCase();
           if (tag === 'line' || tag === 'rect' || tag === 'path') {
@@ -1140,7 +1216,17 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
 
         if (activeGraphicalNotes.length) {
           activeGraphicalNotes.forEach((graphicalNote) => {
-            applyGraphicalNoteColor(graphicalNote, playheadColor);
+            applyGraphicalNoteColor(graphicalNote, playheadNoteColor);
+          });
+        }
+      }
+
+      function setPlayheadNoteColor(color) {
+        if (typeof color !== 'string' || color.length < 4) return;
+        playheadNoteColor = color;
+        if (activeGraphicalNotes.length) {
+          activeGraphicalNotes.forEach((graphicalNote) => {
+            applyGraphicalNoteColor(graphicalNote, playheadNoteColor);
           });
         }
       }
@@ -1529,6 +1615,20 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
 
       function handleTouchStart(event) {
         if (!event || !event.touches || event.touches.length === 0) return;
+
+        if (event.touches.length >= 2) {
+          const d = getTouchDistance(event.touches[0], event.touches[1]);
+          if (d > 0) {
+            pinchGesture = {
+              startDistance: d,
+              startZoom: Number.isFinite(osmd && osmd.Zoom) ? osmd.Zoom : (renderZoom * 0.95),
+            };
+            touchGesture = null;
+            noteUserScrollInteraction(820);
+          }
+          return;
+        }
+
         const t = event.touches[0];
         touchGesture = {
           startX: Number(t && t.clientX),
@@ -1538,7 +1638,23 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
       }
 
       function handleTouchMove(event) {
-        if (!touchGesture || !event || !event.touches || event.touches.length === 0) return;
+        if (!event || !event.touches || event.touches.length === 0) return;
+
+        if (pinchGesture && event.touches.length >= 2) {
+          const d = getTouchDistance(event.touches[0], event.touches[1]);
+          if (d > 0 && pinchGesture.startDistance > 0) {
+            const ratio = d / pinchGesture.startDistance;
+            const targetZoom = pinchGesture.startZoom * ratio;
+            previewPinchZoom(targetZoom);
+            noteUserScrollInteraction(900);
+            if (typeof event.preventDefault === 'function') {
+              event.preventDefault();
+            }
+          }
+          return;
+        }
+
+        if (!touchGesture) return;
         const t = event.touches[0];
         const x = Number(t && t.clientX);
         const y = Number(t && t.clientY);
@@ -1554,6 +1670,13 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
       }
 
       function handleTouchEnd(event) {
+        if (pinchGesture) {
+          if (event && event.touches && event.touches.length >= 2) return;
+          pinchGesture = null;
+          commitPinchZoom();
+          return;
+        }
+
         if (!touchGesture) {
           handleScoreTap(event);
           return;
@@ -1566,6 +1689,9 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
       }
 
       function handleTouchCancel() {
+        pinchGesture = null;
+        pinchPreviewZoom = null;
+        clearPinchPreview();
         touchGesture = null;
       }
 
@@ -1640,6 +1766,7 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
       window.__resetPlayback = resetPlayback;
       window.__setPlayheadMode = setPlayheadMode;
       window.__setPlayheadColor = setPlayheadColor;
+      window.__setPlayheadNoteColor = setPlayheadNoteColor;
       window.__setVoiceSelection = setVoiceSelection;
       window.__setActiveNoteIds = setActiveNoteIds;
       window.__setHighlightBuckets = setHighlightBucketsPayload;
@@ -1654,7 +1781,7 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
           osmd = new window.opensheetmusicdisplay.OpenSheetMusicDisplay(scoreEl, {
             backend: 'svg',
             drawTitle: false,
-            autoResize: true,
+            autoResize: false,
             followCursor: false,
             drawingParameters: layoutSettings.drawingParameters,
             drawPartNames: ${drawPartStructure ? 'true' : 'false'},
@@ -1665,8 +1792,8 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
             drawMeasureNumbers: true,
           });
 
-          // Render slightly smaller on mobile so more SATB content fits before scrolling.
-          osmd.Zoom = renderZoom * 0.95;
+          // Smart opens fully zoomed out by default; fit keeps previous auto-fit behavior.
+          osmd.Zoom = initialRenderZoom;
 
           await osmd.load(xml);
 
@@ -1702,9 +1829,11 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
 
           await osmd.render();
 
-          await fitScoreToWidth();
-          await fitScoreToViewport();
-          await fitScoreToWidth();
+          if (renderPreset === 'fit') {
+            await fitScoreToWidth();
+            await fitScoreToViewport();
+            await fitScoreToWidth();
+          }
 
           // Cache all note/rest timestamps for smooth positioning
           noteTimestamps = extractNoteTimestamps();
@@ -1718,11 +1847,12 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
           scoreEl.addEventListener('pointermove', handlePointerMove, { passive: true });
           scoreEl.addEventListener('pointerup', handlePointerUp, { passive: true });
           scoreEl.addEventListener('pointercancel', handlePointerCancel, { passive: true });
-          scoreEl.addEventListener('touchstart', handleTouchStart, { passive: true });
-          scoreEl.addEventListener('touchmove', handleTouchMove, { passive: true });
-          scoreEl.addEventListener('touchend', handleTouchEnd, { passive: true });
-          scoreEl.addEventListener('touchcancel', handleTouchCancel, { passive: true });
+          scoreEl.addEventListener('touchstart', handleTouchStart, { passive: false });
+          scoreEl.addEventListener('touchmove', handleTouchMove, { passive: false });
+          scoreEl.addEventListener('touchend', handleTouchEnd, { passive: false });
+          scoreEl.addEventListener('touchcancel', handleTouchCancel, { passive: false });
           setPlayheadColor(playheadColor);
+          setPlayheadNoteColor(playheadNoteColor);
           setPlayheadMode(playheadMode);
           
           osmd.cursor.show();
@@ -1741,9 +1871,23 @@ function buildHtml(musicXml, renderViewPreset = 'fit', osmdRuntimeScriptText = '
 </html>`;
 }
 
-export const RenderedScoreView = forwardRef(({ musicXml, currentBeat, playheadMode = 'notes', playheadColor = '#F08A45', renderViewPreset = 'fit', showControlBar = true, onPlayheadModeChange, onPlayheadColorChange, onRenderViewPresetChange, onSeekNormalizedBeat }, ref) => {
+export const RenderedScoreView = forwardRef(({ musicXml, currentBeat, playheadMode = 'notes', playheadColor = '#F08A45', playheadNoteColor = '#C94B1A', renderViewPreset = 'fit', showControlBar = true, onPlayheadModeChange, onPlayheadColorChange, onPlayheadNoteColorChange, onRenderViewPresetChange, onSeekNormalizedBeat }, ref) => {
   const webViewRef = useRef(null);
   const lastInjectedBeatRef = useRef(-1);
+  const lastPlaybackInjectTsRef = useRef(0);
+  const PLAYHEAD_SYNC_MIN_INTERVAL_MS = 85;
+  const PLAYHEAD_SYNC_MIN_DELTA = 0.0035;
+
+  const shouldThrottlePlayheadSync = (normalizedBeat) => {
+    const now = Date.now();
+    const elapsed = now - lastPlaybackInjectTsRef.current;
+    const delta = Math.abs(normalizedBeat - lastInjectedBeatRef.current);
+    if (elapsed < PLAYHEAD_SYNC_MIN_INTERVAL_MS && delta < PLAYHEAD_SYNC_MIN_DELTA) {
+      return true;
+    }
+    lastPlaybackInjectTsRef.current = now;
+    return false;
+  };
   const [runtimeScriptText, setRuntimeScriptText] = useState('');
   const [runtimeFailed, setRuntimeFailed] = useState(false);
 
@@ -1775,6 +1919,7 @@ export const RenderedScoreView = forwardRef(({ musicXml, currentBeat, playheadMo
     syncBeat: (beat, totalBeats) => {
       if (!webViewRef.current || !Number.isFinite(beat) || !Number.isFinite(totalBeats) || totalBeats <= 0) return;
       const normalizedBeat = Math.max(0, Math.min(1, beat / totalBeats));
+      if (shouldThrottlePlayheadSync(normalizedBeat)) return;
       lastInjectedBeatRef.current = normalizedBeat;
       webViewRef.current.injectJavaScript(
         `(function() {
@@ -1798,6 +1943,7 @@ export const RenderedScoreView = forwardRef(({ musicXml, currentBeat, playheadMo
     syncPlayback: (timeSec, totalSec) => {
       if (!webViewRef.current || !Number.isFinite(timeSec) || !Number.isFinite(totalSec) || totalSec <= 0) return;
       const normalizedBeat = Math.max(0, Math.min(1, timeSec / totalSec));
+      if (shouldThrottlePlayheadSync(normalizedBeat)) return;
       lastInjectedBeatRef.current = normalizedBeat;
       webViewRef.current.injectJavaScript(
         `(function() {
@@ -1820,6 +1966,7 @@ export const RenderedScoreView = forwardRef(({ musicXml, currentBeat, playheadMo
     },
     resetPlayback: () => {
       lastInjectedBeatRef.current = -1;
+      lastPlaybackInjectTsRef.current = 0;
       if (!webViewRef.current) return;
       webViewRef.current.injectJavaScript(
         `(function() {
@@ -2001,6 +2148,25 @@ export const RenderedScoreView = forwardRef(({ musicXml, currentBeat, playheadMo
     );
   }, [playheadColor]);
 
+  useEffect(() => {
+    if (!webViewRef.current || typeof playheadNoteColor !== 'string') return;
+    const safeColor = playheadNoteColor.replace(/'/g, '');
+    if (safeColor.length < 4) return;
+
+    webViewRef.current.injectJavaScript(
+      `(function() {
+        if (window.__setPlayheadNoteColor && typeof window.__setPlayheadNoteColor === 'function') {
+          try {
+            window.__setPlayheadNoteColor('${safeColor}');
+          } catch (e) {
+            console.error('setPlayheadNoteColor prop error:', e);
+          }
+        }
+        true;
+      })();`
+    );
+  }, [playheadNoteColor]);
+
   if (!musicXml || musicXml.length < 20) {
     return (
       <View style={styles.centered}>
@@ -2051,7 +2217,7 @@ export const RenderedScoreView = forwardRef(({ musicXml, currentBeat, playheadMo
             style={({ pressed }) => [styles.colorPill, pressed && styles.pressedPill]}
             onPress={() => {
               if (typeof onPlayheadColorChange === 'function') {
-                const colors = ['#F08A45', '#C94B1A', '#6B4226', '#8B5E3C'];
+                const colors = ['#2F8F6B', '#F08A45', '#CC4B37', '#7A5A3A', 'none'];
                 const idx = Math.max(0, colors.indexOf(playheadColor));
                 const nextColor = colors[(idx + 1) % colors.length];
                 console.log('Color pill tapped: current=', playheadColor, 'next=', nextColor);
@@ -2059,7 +2225,21 @@ export const RenderedScoreView = forwardRef(({ musicXml, currentBeat, playheadMo
               }
             }}
           >
-            <View style={[styles.colorSwatch, { backgroundColor: playheadColor }]} />
+            <View style={[styles.colorSwatch, { backgroundColor: playheadColor === 'none' ? 'transparent' : playheadColor, borderWidth: 1, borderColor: '#6E675E' }]} />
+          </Pressable>
+
+          <Pressable
+            style={({ pressed }) => [styles.colorPill, pressed && styles.pressedPill]}
+            onPress={() => {
+              if (typeof onPlayheadNoteColorChange === 'function') {
+                const colors = ['#F08A45', '#CC4B37', '#2D8CFF'];
+                const idx = Math.max(0, colors.indexOf(playheadNoteColor));
+                const nextColor = colors[(idx + 1) % colors.length];
+                onPlayheadNoteColorChange(nextColor);
+              }
+            }}
+          >
+            <View style={[styles.colorSwatch, { backgroundColor: playheadNoteColor }]} />
           </Pressable>
         </View>
       )}

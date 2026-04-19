@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Music Eye Logo</title>
+  <style>
+    /*
+     * ─────────────────────────────────────────────
+     *  MUSIC EYE — Animated Logo
+     *  Drop this file into your app or copy the
+     *  <svg> block + <style> + <script> sections.
+     * ─────────────────────────────────────────────
+     *
+     *  CUSTOMISATION VARIABLES
+     *  Edit these to match your app's theme:
+     *
+     *  --eye-color        stroke & fill color of the eye
+     *  --eye-size-w       rendered width  of the SVG
+     *  --eye-size-h       rendered height of the SVG
+     *  --note-interval    ms between note appearances
+     *  --gaze-interval    ms between gaze movements
+     *  --scan-duration    CSS duration of scan line sweep
+     *  --blink-duration   CSS duration of the blink cycle
+     */
+
+    :root {
+      --eye-color:      #000000;
+      --eye-accent:     #000000;
+      --eye-bg:         #ffffff;
+      --eye-page-bg:    #F9F7F1;
+      --eye-size-w:     160px;
+      --eye-size-h:     104px;
+      --note-interval:  4000;   /* JS only — edit the script */
+      --gaze-interval:  1600;   /* JS only — edit the script */
+      --scan-duration:  2.8s;
+      --blink-duration: 6s;
+    }
+
+    /* ── Preview wrapper (remove in production) ── */
+    body {
+      margin: 0;
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 0;
+      overflow: hidden;
+      background: var(--eye-page-bg);
+    }
+
+    /* ── SVG container ── */
+    .music-eye {
+      width: min(var(--eye-size-w), calc(100vw - 20px));
+      height: auto;
+      max-width: 100%;
+      max-height: calc(100vh - 18px);
+      display: block;
+    }
+
+    /* ── Float ── */
+    @keyframes me-float {
+      0%,100% { transform: translateY(0px) scale(1);  }
+      50%      { transform: translateY(-0.8px) scale(1.002); }
+    }
+
+    /* ── Blink — top lid closes to midline ── */
+    @keyframes me-blink-top {
+      0%,88%,100% { d: path("M2 13C2 13 9 2 18 2C27 2 34 13 34 13");  }
+      93%          { d: path("M2 13C2 13 9 13 18 13C27 13 34 13 34 13"); }
+    }
+
+    /* ── Blink — bottom lid closes to midline ── */
+    @keyframes me-blink-bot {
+      0%,88%,100% { d: path("M2 13C2 13 9 24 18 24C27 24 34 13 34 13"); }
+      93%          { d: path("M2 13C2 13 9 13 18 13C27 13 34 13 34 13");  }
+    }
+
+    /* ── Aperture clip follows eyelids so eyeball is truly occluded ── */
+    @keyframes me-blink-aperture {
+      0%,88%,100% { d: path("M2 13C2 13 9 2 18 2C27 2 34 13 34 13C34 13 27 24 18 24C9 24 2 13 2 13Z"); }
+      93%          { d: path("M2 13C2 13 9 13 18 13C27 13 34 13 34 13C34 13 27 13 18 13C9 13 2 13 2 13Z"); }
+    }
+
+    /* ── Iris gentle pulse ── */
+    @keyframes me-pulse-iris {
+      0%,100% { transform: scale(1);    }
+      50%      { transform: scale(1.05); }
+    }
+
+    /* ── Scan line sweeps left → right ── */
+    @keyframes me-scan {
+      0%   { transform: translateX(-13px); opacity: 0;   }
+      8%   { opacity: 1;   }
+      92%  { opacity: 1;   }
+      100% { transform: translateX(13px);  opacity: 0;   }
+    }
+
+    /* ── Applied classes ── */
+    .me-floater   { animation: me-float          6s  ease-in-out infinite; }
+    .me-lid-top   { animation: me-blink-top      var(--blink-duration) ease-in-out infinite; }
+    .me-lid-bot   { animation: me-blink-bot      var(--blink-duration) ease-in-out infinite; }
+    .me-aperture  { animation: me-blink-aperture var(--blink-duration) ease-in-out infinite; }
+    .me-iris      { transform-origin: 18px 13px; animation: me-pulse-iris 3s ease-in-out infinite; }
+    .me-scanbar   { animation: me-scan           var(--scan-duration)  ease-in-out infinite; }
+
+    /* ── Dot gaze movement ── */
+    #me-dot-group {
+      transition: transform 1s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+    }
+
+    /* ── Note slide transitions ── */
+    .me-note {
+      transition: opacity 0.4s ease, transform 0.4s ease;
+      transform-origin: 18px 13px;
+      font-weight: 600;
+      letter-spacing: 0.2px;
+    }
+    .me-note.enter   { opacity: 0; transform: translate( 7px, 0) scale(0.7); }
+    .me-note.visible { opacity: 1; transform: translate( 0px, 0) scale(1);   }
+    .me-note.exit    { opacity: 0; transform: translate(-7px, 0) scale(0.7); }
+
+    /* ── Dot fade ── */
+    #me-dot {
+      transition: opacity 0.3s ease;
+    }
+
+    .me-outline {
+      filter: none;
+    }
+
+    .me-sclera {
+      fill: var(--eye-bg);
+    }
+
+    .me-iris-core {
+      fill: #ffffff;
+      stroke: none;
+    }
+
+    .me-scanbar {
+      stroke: #000000;
+      opacity: 0.45;
+    }
+  </style>
+</head>
+<body>
+
+<!--
+  ╔══════════════════════════════════════════════════════╗
+  ║  MUSIC EYE SVG — copy from here into your app       ║
+  ╚══════════════════════════════════════════════════════╝
+-->
+<svg class="music-eye"
+     viewBox="0 0 36 26"
+     xmlns="http://www.w3.org/2000/svg"
+     fill="none"
+     aria-label="Music Eye logo">
+
+  <defs>
+    <!-- Clips content to the eye shape -->
+    <clipPath id="me-eye-clip">
+      <path d="M2 13C2 13 9 2 18 2C27 2 34 13 34 13C34 13 27 24 18 24C9 24 2 13 2 13Z"/>
+    </clipPath>
+
+    <!-- Animated aperture clip so lids actually cover the eyeball -->
+    <clipPath id="me-eye-aperture-clip">
+      <path class="me-aperture" d="M2 13C2 13 9 2 18 2C27 2 34 13 34 13C34 13 27 24 18 24C9 24 2 13 2 13Z"/>
+    </clipPath>
+  </defs>
+
+  <!-- Outer group floats gently up/down -->
+  <g class="me-floater me-outline">
+
+    <!-- Iris + pupil group — hides on blink -->
+    <g class="me-eyeball" clip-path="url(#me-eye-aperture-clip)">
+
+      <!-- Eye white -->
+      <path class="me-sclera" d="M2 13C2 13 9 2 18 2C27 2 34 13 34 13C34 13 27 24 18 24C9 24 2 13 2 13Z"/>
+
+      <!-- Iris ring -->
+      <circle class="me-iris" cx="18" cy="13" r="6"
+              stroke="var(--eye-color)" stroke-width="1.5" fill="none"/>
+
+      <!-- Iris fill + accent ring -->
+      <circle class="me-iris me-iris-core" cx="18" cy="13" r="4.9"/>
+
+      <!-- Dot (pupil) — roams around iris, hidden when note shows -->
+      <g id="me-dot-group" clip-path="url(#me-eye-clip)">
+        <circle id="me-dot" cx="18" cy="13" r="2.25" fill="var(--eye-color)"/>
+      </g>
+
+    </g>
+    <!-- /me-eyeball -->
+
+    <!-- Top eyelid — animates down to midline on blink -->
+    <path class="me-lid-top"
+          d="M2 13C2 13 9 2 18 2C27 2 34 13 34 13"
+          stroke="var(--eye-color)" stroke-width="1.5"
+          stroke-linecap="round" fill="none"/>
+
+    <!-- Bottom eyelid — animates up to midline on blink -->
+    <path class="me-lid-bot"
+          d="M2 13C2 13 9 24 18 24C27 24 34 13 34 13"
+          stroke="var(--eye-color)" stroke-width="1.5"
+          stroke-linecap="round" fill="none"/>
+
+  </g>
+  <!-- /me-floater -->
+
+</svg>
+<!--
+  ╚══════════════════════════════════════════════════════╝
+-->
+
+<script>
+  /**
+   * ─────────────────────────────────────────────────────
+   *  MUSIC EYE — Animation Controller
+   *
+   *  TUNEABLE CONSTANTS:
+   *    NOTE_INTERVAL   how often a note appears  (ms)
+   *    NOTE_DURATION   how long note stays shown  (ms)
+   *    GAZE_INTERVAL   how often the dot moves    (ms)
+   *    NOTE_DELAY      delay before first note    (ms)
+   * ─────────────────────────────────────────────────────
+   */
+  const NOTE_INTERVAL = 4000;
+  const NOTE_DURATION = 2200;
+  const GAZE_INTERVAL = 1600;
+  const NOTE_DELAY    = 2000;
+
+  const dotGroup   = document.getElementById('me-dot-group');
+  const dot        = document.getElementById('me-dot');
+
+  let showingNote  = false;
+  let gazeIdx      = 0;
+
+  /**
+   * Gaze positions — translate offsets within the iris.
+   * Keep values small (< 2.5) so the dot stays inside the iris ring.
+   * Format: { x, y }
+   */
+  const GAZE_POSITIONS = [
+    { x:  0,    y:  0    },  // centre
+    { x:  1.8,  y: -1    },  // upper right
+    { x: -1.8,  y:  0.5  },  // left
+    { x:  0.8,  y:  1.2  },  // lower right
+    { x: -1,    y: -1.2  },  // upper left
+    { x:  1.5,  y:  0.8  },  // right
+    { x:  0,    y:  0    },  // back to centre
+  ];
+
+  /* Move the dot to the next gaze position */
+  function moveGaze() {
+    if (showingNote) return;
+    gazeIdx = (gazeIdx + 1) % GAZE_POSITIONS.length;
+    const p = GAZE_POSITIONS[gazeIdx];
+    dotGroup.style.transform = `translate(${p.x}px, ${p.y}px)`;
+  }
+
+  /* Snap dot back to iris centre */
+  function snapToCenter() {
+    dotGroup.style.transform = `translate(0px, 0px)`;
+  }
+
+  /* Start gaze wandering */
+  setInterval(moveGaze, GAZE_INTERVAL);
+</script>
+
+</body>
+</html>

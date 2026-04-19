@@ -13,6 +13,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { LibraryService } from '../services/LibraryService';
+import { getStatusBarStyleForTheme } from '../theme/themes';
 
 /**
  * LibraryScreen — Browse previously scanned music from the local library.
@@ -20,11 +21,22 @@ import { LibraryService } from '../services/LibraryService';
  * Displays all saved scores with metadata (composer, key, time signature).
  * Tap to play, swipe to delete, or use actions menu.
  */
-export const LibraryScreen = ({ onNavigateBack, onScoreTap }) => {
+export const LibraryScreen = ({ onNavigateBack, onScoreTap, theme: incomingTheme }) => {
   const [entries, setEntries] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const insets = useSafeAreaInsets();
+  const theme = incomingTheme || {
+    background: '#F9F7F1',
+    surface: '#FBFAF5',
+    surfaceStrong: '#F1EEE4',
+    border: '#D6D0C4',
+    ink: '#3E3C37',
+    inkMuted: '#6E675E',
+    inkSubtle: '#9B967B',
+    accent: '#E05A2A',
+    danger: '#D9534F',
+  };
 
   useEffect(() => {
     loadLibrary();
@@ -113,77 +125,97 @@ export const LibraryScreen = ({ onNavigateBack, onScoreTap }) => {
     });
   };
 
+  const formatTimeSignature = (value) => {
+    if (!value) return '';
+    if (typeof value === 'string') return value;
+    if (typeof value === 'object') {
+      const beats = Number(value.beats);
+      const beatType = Number(value.beatType);
+      if (Number.isFinite(beats) && Number.isFinite(beatType)) {
+        return `${beats}/${beatType}`;
+      }
+    }
+    return String(value);
+  };
+
   const renderEmptyState = () => (
     <View style={styles.emptyState}>
-      <Feather name="music" size={64} color="#9B967B" style={{ marginBottom: 16 }} />
-      <Text style={styles.emptyStateTitle}>No Scanned Music Yet</Text>
-      <Text style={styles.emptyStateText}>
+      <Feather name="music" size={64} color={theme.inkSubtle} style={{ marginBottom: 16 }} />
+      <Text style={[styles.emptyStateTitle, { color: theme.ink }]}>No Scanned Music Yet</Text>
+      <Text style={[styles.emptyStateText, { color: theme.inkMuted }]}> 
         Start by scanning sheet music from camera, photos, or files to build your library.
       </Text>
     </View>
   );
 
   const renderScoreItem = ({ item: entry }) => (
-    <View style={styles.scoreCard}>
+    <View style={[styles.scoreCard, { backgroundColor: theme.surface, borderColor: theme.border }]}> 
       <TouchableOpacity
         style={styles.scoreCardContent}
         onPress={() => handleScoreTap(entry)}
       >
-        <View style={styles.scoreCardIcon}>
-          <Feather name="music" size={20} color="#3E3C37" />
+        <View style={[styles.scoreCardIcon, { backgroundColor: theme.surfaceStrong }]}>
+          <Feather name="music" size={20} color={theme.ink} />
         </View>
 
         <View style={styles.scoreCardInfo}>
-          <Text style={styles.scoreTitle} numberOfLines={1}>
+          <Text style={[styles.scoreTitle, { color: theme.ink }]} numberOfLines={1}>
             {entry.title || 'Untitled'}
           </Text>
           <View style={styles.scoreMetadata}>
+            {(() => {
+              const timeSignatureText = formatTimeSignature(entry.timeSignature);
+              return (
+                <>
             {entry.composer && entry.composer !== 'Unknown' && (
-              <Text style={styles.scoreMetaText}>
+              <Text style={[styles.scoreMetaText, { color: theme.inkMuted }]}> 
                 {entry.composer}
               </Text>
             )}
-            {entry.timeSignature && (
-              <Text style={styles.scoreMetaText}>
-                • {entry.timeSignature}
+            {timeSignatureText && (
+              <Text style={[styles.scoreMetaText, { color: theme.inkMuted }]}> 
+                • {timeSignatureText}
               </Text>
             )}
+                </>
+              );
+            })()}
           </View>
           <View style={styles.scoreFooter}>
-            <Text style={styles.scoreNoteCount}>
+            <Text style={[styles.scoreNoteCount, { color: theme.inkSubtle }]}> 
               {entry.noteCount} note{entry.noteCount !== 1 ? 's' : ''}
             </Text>
-            <Text style={styles.scoreDate}>
+            <Text style={[styles.scoreDate, { color: theme.inkSubtle }]}> 
               {formatDate(entry.timestamp)}
             </Text>
           </View>
         </View>
 
-        <Feather name="play" size={24} color="#6E675E" style={styles.playIcon} />
+        <Feather name="play" size={24} color={theme.inkMuted} style={styles.playIcon} />
       </TouchableOpacity>
 
-      <View style={styles.scoreCardActions}>
+      <View style={[styles.scoreCardActions, { borderTopColor: theme.border }]}> 
         <TouchableOpacity
           style={styles.actionButton}
           onPress={() => handleScoreTap(entry)}
         >
-          <Feather name="play" size={16} color="#3E3C37" />
-          <Text style={styles.actionButtonText}>Play</Text>
+          <Feather name="play" size={16} color={theme.ink} />
+          <Text style={[styles.actionButtonText, { color: theme.ink }]}>Play</Text>
         </TouchableOpacity>
         <TouchableOpacity
-          style={[styles.actionButton, styles.deleteButton]}
+          style={[styles.actionButton, styles.deleteButton, { borderLeftColor: theme.border }]}
           onPress={() => handleDeleteScore(entry)}
         >
-          <Feather name="trash-2" size={16} color="#D9534F" />
-          <Text style={[styles.actionButtonText, styles.deleteButtonText]}>Delete</Text>
+          <Feather name="trash-2" size={16} color={theme.danger} />
+          <Text style={[styles.actionButtonText, styles.deleteButtonText, { color: theme.danger }]}>Delete</Text>
         </TouchableOpacity>
       </View>
     </View>
   );
 
   return (
-    <View style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="#F9F7F1" />
+    <View style={[styles.container, { backgroundColor: theme.background }]}> 
+      <StatusBar barStyle={getStatusBarStyleForTheme({ colors: theme })} backgroundColor={theme.background} />
 
       {/* Header */}
       <View
@@ -200,15 +232,15 @@ export const LibraryScreen = ({ onNavigateBack, onScoreTap }) => {
           style={styles.backButton}
           onPress={onNavigateBack}
         >
-          <Feather name="arrow-left" size={24} color="#3E3C37" />
+          <Feather name="arrow-left" size={24} color={theme.ink} />
         </TouchableOpacity>
-        <Text style={styles.title}>Scanned Music</Text>
+        <Text style={[styles.title, { color: theme.ink }]}>Scanned Music</Text>
         {entries.length > 0 && (
           <TouchableOpacity
             style={styles.clearButton}
             onPress={handleClearAll}
           >
-            <Feather name="trash" size={20} color="#D9534F" />
+            <Feather name="trash" size={20} color={theme.danger} />
           </TouchableOpacity>
         )}
         {entries.length === 0 && <View style={{ width: 40 }} />}
@@ -217,13 +249,13 @@ export const LibraryScreen = ({ onNavigateBack, onScoreTap }) => {
       {/* Library Content */}
       {isLoading ? (
         <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#3E3C37" />
+          <ActivityIndicator size="large" color={theme.ink} />
         </View>
       ) : entries.length === 0 ? (
         renderEmptyState()
       ) : (
         <View style={[styles.content, { paddingLeft: 16 + insets.left, paddingRight: 16 + insets.right }]}>
-          <Text style={styles.libraryStats}>
+          <Text style={[styles.libraryStats, { color: theme.inkMuted }]}> 
             {entries.length} score{entries.length !== 1 ? 's' : ''} in library
           </Text>
           <FlatList

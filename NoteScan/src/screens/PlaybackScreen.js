@@ -14,6 +14,7 @@ import {
   Animated,
   Easing,
 } from 'react-native';
+import { Image } from 'react-native';
 import { File, Paths } from 'expo-file-system/next';
 import * as Sharing from 'expo-sharing';
 import Slider from '@react-native-community/slider';
@@ -26,6 +27,9 @@ import { RenderedScoreView } from '../components/RenderedScoreView';
 import { ScoreInfoPanel } from '../components/ScoreInfoPanel';
 import { OMRSettings } from '../services/OMRSettings';
 import { OMRCacheService } from '../services/OMRCacheService';
+import { NativeAudioBridge } from '../services/NativeAudioBridge';
+import { getStatusBarStyleForTheme } from '../theme/themes';
+import { buildThemedLogoHtml } from '../utils/logoTheme';
 
 /* ─── Theme ─── */
 const palette = {
@@ -50,145 +54,54 @@ const barPalette = {
 const ENABLE_PITCH_VIEW = false;
 const AUDIO_TIMELINE_MODE = 'canonical';
 const RENDERED_PLAYHEAD_MODES = ['line', 'notes', 'both'];
-const RENDERED_HIGHLIGHT_COLORS = ['#F08A45', '#C94B1A', '#6B4226', '#8B5E3C'];
+const RENDERED_LINE_COLORS = ['#2F8F6B', '#F08A45', '#CC4B37', '#7A5A3A', 'none'];
+const RENDERED_NOTE_COLORS = ['#F08A45', '#CC4B37', '#2D8CFF'];
 const RENDER_VIEW_PRESETS = ['smart', 'fit'];
 const RENDER_VISUAL_LEAD_MS = 0;
 const PLAYBACK_UI_UPDATE_MS = 16;
+const PITCH_PIPE_NOTES = [
+  { label: 'C4', hz: 262 },
+  { label: 'C#4', hz: 277 },
+  { label: 'D4', hz: 294 },
+  { label: 'D#4', hz: 311 },
+  { label: 'E4', hz: 330 },
+  { label: 'F4', hz: 349 },
+  { label: 'F#4', hz: 370 },
+  { label: 'G4', hz: 392 },
+  { label: 'G#4', hz: 415 },
+  { label: 'A4', hz: 440 },
+  { label: 'A#4', hz: 466 },
+  { label: 'B4', hz: 494 },
+  { label: 'C5', hz: 523 },
+];
+const PITCH_PIPE_MIN_HZ = PITCH_PIPE_NOTES[0].hz;
+const PITCH_PIPE_MAX_HZ = PITCH_PIPE_NOTES[PITCH_PIPE_NOTES.length - 1].hz;
 
+const INSTRUMENT_PRIORITY = [
+  'electric grand',
+  'grand piano',
+  'violin',
+  'jazz guitar',
+];
 
-const loadingEyeHtml = `
-<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <style>
-      html, body {
-        margin: 0;
-        padding: 0;
-        width: 100%;
-        height: 100%;
-        background: transparent;
-        overflow: hidden;
-      }
-      @keyframes blink {
-        0%, 88%, 100% { transform: scaleY(1); }
-        92%, 96% { transform: scaleY(0.04); }
-      }
-      @keyframes drift {
-        0%, 25% { transform: translate(0,0); }
-        30%, 55% { transform: translate(5px,-3px); }
-        60%, 85% { transform: translate(-4px,3px); }
-        90%, 100% { transform: translate(0,0); }
-      }
-      @keyframes pulseRing {
-        0% { r: 22; opacity: 0.9; stroke-width: 2.5; }
-        100% { r: 44; opacity: 0; stroke-width: 0.5; }
-      }
-      .wrap {
-        width: 100%;
-        height: 100%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-      }
-      .eye {
-        animation: blink 6s ease-in-out infinite;
-        transform-origin: 41px 41px;
-      }
-      .pupil {
-        animation: drift 8s cubic-bezier(.45,.05,.55,.95) infinite;
-        transform-origin: 41px 41px;
-      }
-      #noteLayer {
-        opacity: 0;
-        transition: opacity 0.35s ease;
-        transform-box: fill-box;
-        transform-origin: center;
-      }
-      #noteTxt {
-        transition: fill 0.25s ease, font-size 0.2s ease;
-      }
-    </style>
-  </head>
-  <body>
-    <div class="wrap">
-      <svg width="110" height="82" viewBox="0 0 82 82" style="overflow:visible;">
-        <defs><clipPath id="loadingMainClip"><path d="M4,41 Q41,-8 78,41 Q41,90 4,41Z"/></clipPath></defs>
-        <g class="eye">
-          <path d="M4,41 Q41,-8 78,41 Q41,90 4,41Z" fill="#faf7f2" stroke="#2a1e10" stroke-width="1.5"/>
-          <g clip-path="url(#loadingMainClip)">
-            <circle cx="41" cy="41" r="22" fill="#e8dcc8"/>
-            <circle cx="41" cy="41" r="22" fill="none" stroke="#2a1e10" stroke-width="1"/>
-            <circle id="pr" cx="41" cy="41" r="22" fill="none" stroke="#c9a96e" stroke-width="2" opacity="0"/>
-            <g class="pupil">
-              <circle cx="41" cy="41" r="13" fill="#2a1e10"/>
-              <g id="noteLayer">
-                <text id="noteTxt" x="41" y="45" text-anchor="middle" dominant-baseline="middle" font-family="Georgia,serif" font-size="16" fill="white">♪</text>
-              </g>
-              <circle cx="35" cy="34" r="2.5" fill="white" opacity="0.85"/>
-            </g>
-          </g>
-          <path d="M4,41 Q41,-8 78,41" fill="none" stroke="#2a1e10" stroke-width="1.5" stroke-linecap="round"/>
-          <path d="M4,41 Q41,90 78,41" fill="none" stroke="#2a1e10" stroke-width="1" stroke-linecap="round"/>
-        </g>
-      </svg>
-    </div>
+function orderInstrumentPresets(presets) {
+  const list = Array.isArray(presets) ? [...presets] : [];
+  if (!list.length) return list;
 
-    <script>
-      const NOTES = ['♪','♫','♩','♬'];
-      let idx = 0;
+  const getRank = (name) => {
+    const normalized = String(name || '').toLowerCase();
+    const idx = INSTRUMENT_PRIORITY.findIndex((needle) => normalized.includes(needle));
+    return idx >= 0 ? idx : Number.POSITIVE_INFINITY;
+  };
 
-      function runCycle(noteIdx) {
-        const nl = document.getElementById('noteLayer');
-        const nt = document.getElementById('noteTxt');
-        const pr = document.getElementById('pr');
-        if (!nl || !nt) return;
+  return list.sort((a, b) => {
+    const rankA = getRank(a?.name);
+    const rankB = getRank(b?.name);
+    if (rankA !== rankB) return rankA - rankB;
+    return (a?.index ?? 0) - (b?.index ?? 0);
+  });
+}
 
-        const sym = NOTES[noteIdx % NOTES.length];
-        const normalFill = 'white';
-        const detectFill = '#f0b840';
-
-        nl.style.transition = 'none';
-        nl.style.transform = 'translateX(16px)';
-        nl.style.opacity = '0';
-        nt.textContent = sym;
-        nt.style.fill = normalFill;
-        nt.style.fontSize = '16px';
-
-        requestAnimationFrame(() => requestAnimationFrame(() => {
-          nl.style.transition = 'opacity 0.38s ease, transform 0.42s cubic-bezier(.22,.68,0,1.2)';
-          nl.style.transform = 'translateX(0)';
-          nl.style.opacity = '1';
-        }));
-
-        setTimeout(() => {
-          nt.style.fill = detectFill;
-          nt.style.fontSize = '19px';
-          if (pr) { pr.style.animation = 'none'; pr.style.opacity = '0'; }
-          requestAnimationFrame(() => { if (pr) pr.style.animation = 'pulseRing 0.85s ease-out forwards'; });
-        }, 680);
-
-        setTimeout(() => {
-          nt.style.fill = normalFill;
-          nt.style.fontSize = '16px';
-          nl.style.transition = 'opacity 0.35s ease, transform 0.4s cubic-bezier(.55,0,1,.45)';
-          nl.style.transform = 'translateX(-16px)';
-          nl.style.opacity = '0';
-        }, 1550);
-      }
-
-      function tick() {
-        runCycle(idx);
-        idx = (idx + 1) % NOTES.length;
-      }
-
-      tick();
-      setInterval(tick, 2800);
-    </script>
-  </body>
-</html>
-`;
 
 function buildPitchTimelineFromRawEvents(noteEvents, tempoBpm) {
   if (!Array.isArray(noteEvents) || !noteEvents.length || !Number.isFinite(tempoBpm) || tempoBpm <= 0) {
@@ -228,9 +141,35 @@ function getLiteralPlaybackNotes(scoreData) {
   return scoreData?.notes || [];
 }
 
+function getNearestPitchPipeIndex(hz) {
+  const safeHz = Number.isFinite(hz) ? hz : 440;
+  let bestIdx = 0;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < PITCH_PIPE_NOTES.length; i += 1) {
+    const distance = Math.abs(PITCH_PIPE_NOTES[i].hz - safeHz);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIdx = i;
+    }
+  }
+  return bestIdx;
+}
+
 /* ─── Component ─── */
-export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEntry, onNavigateBack, onScoredSaved }) => {
+export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEntry, onNavigateBack, onScoredSaved, theme: incomingTheme }) => {
   const insets = useSafeAreaInsets();
+  const theme = {
+    background: incomingTheme?.background || palette.background,
+    surface: incomingTheme?.surface || palette.surface,
+    surfaceStrong: incomingTheme?.surfaceStrong || palette.surfaceStrong,
+    border: incomingTheme?.border || palette.border,
+    ink: incomingTheme?.ink || palette.ink,
+    inkMuted: incomingTheme?.inkMuted || palette.inkMuted,
+    accent: incomingTheme?.accent || barPalette.accent,
+    success: incomingTheme?.success || '#2A7B3D',
+    danger: incomingTheme?.danger || '#D9534F',
+  };
+  const loadingEyeHtml = useMemo(() => buildThemedLogoHtml(theme), [theme]);
   /* ── State ── */
   const [scoreData, setScoreData] = useState(incomingScoreData || null);
   const [scoreError, setScoreError] = useState(null);
@@ -241,12 +180,15 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
   const [isPlaying, setIsPlaying] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [preparing, setPreparing] = useState(false);
+  const [playPending, setPlayPending] = useState(false);
   const [tempo, setTempo] = useState(incomingScoreData?.metadata?.tempo || 120);
   const [sliderTempo, setSliderTempo] = useState(incomingScoreData?.metadata?.tempo || 120);
-  const [showTempoSlider, setShowTempoSlider] = useState(false);
+  const [showAudioControls, setShowAudioControls] = useState(false);
+  const [showTimeline, setShowTimeline] = useState(true);
+  const [showPitchPipeModal, setShowPitchPipeModal] = useState(false);
   const [pitchHz, setPitchHz] = useState(440);
   const [pitchSliderHz, setPitchSliderHz] = useState(440);
-  const [showPitchSlider, setShowPitchSlider] = useState(false);
+  const [pitchPipeIndex, setPitchPipeIndex] = useState(() => getNearestPitchPipeIndex(440));
 
   const [playbackTime, setPlaybackTime] = useState(0);
   const [totalDuration, setTotalDuration] = useState(0);
@@ -258,12 +200,14 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
   const [availablePresets, setAvailablePresets] = useState([]);
   const [selectedPresetIndex, setSelectedPresetIndex] = useState(0);
   const [showInstrumentPicker, setShowInstrumentPicker] = useState(false);
+  const [showOverflowMenu, setShowOverflowMenu] = useState(false);
 
   // Cursor data
   const [pitchTimeline, setPitchTimeline] = useState([]);
   const [scoreViewMode, setScoreViewMode] = useState('rendered');
   const [renderedPlayheadMode, setRenderedPlayheadMode] = useState('notes');
-  const [renderedHighlightColorIdx, setRenderedHighlightColorIdx] = useState(0);
+  const [renderedLineColorIdx, setRenderedLineColorIdx] = useState(1);
+  const [renderedNoteColorIdx, setRenderedNoteColorIdx] = useState(1);
   const [renderViewPreset, setRenderViewPreset] = useState('fit');
   const [preparedPlaybackEvents, setPreparedPlaybackEvents] = useState([]);
   const [preparedTimepointGraph, setPreparedTimepointGraph] = useState([]);
@@ -285,6 +229,8 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
   const transportAnchorTsRef = useRef(0);
   const loadingBarAnim = useRef(new Animated.Value(0)).current;
   const currentScanIdRef = useRef(0);
+  const playPressLockRef = useRef(false);
+  const nativeAudioBridgeRef = useRef(new NativeAudioBridge());
 
   const [voiceSelection, setVoiceSelection] = useState({
     Soprano: true,
@@ -296,6 +242,15 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
   const effectiveVoiceSelection = useMemo(() => {
     return voiceSelection;
   }, [voiceSelection]);
+
+  const persistScannedScore = useCallback(async (result, engineKey) => {
+    if (typeof onScoredSaved !== 'function' || !result) return;
+    try {
+      await onScoredSaved(result, engineKey);
+    } catch (e) {
+      console.warn('PlaybackScreen: failed to persist scanned score', e?.message || e);
+    }
+  }, [onScoredSaved]);
 
   const playbackVoiceSelection = useMemo(() => {
     return effectiveVoiceSelection;
@@ -393,11 +348,28 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
   }, [scoreData?.metadata?.title]);
 
   useEffect(() => {
-    AudioPlaybackService.setPitchHz(pitchHz);
+    // Try native bridge first
+    const nativeBridge = nativeAudioBridgeRef.current;
+    if (nativeBridge?.isAvailable && nativeBridge?.isPlaying) {
+      try {
+        console.log(`[Native] Pitch updating to ${pitchHz} Hz`);
+        nativeBridge.setPitch(pitchHz).catch((e) => {
+          console.warn('Native pitch change failed, using JS:', e.message);
+          AudioPlaybackService.setPitchHz(pitchHz);
+        });
+      } catch (e) {
+        console.warn('Native bridge error:', e.message);
+        AudioPlaybackService.setPitchHz(pitchHz);
+      }
+    } else {
+      AudioPlaybackService.setPitchHz(pitchHz);
+    }
+    
     fallbackWavPreparedRef.current = false;
     fallbackRenderSignatureRef.current = '';
 
-    if (isPlaying || isPaused) {
+    // Legacy fallback cannot retune already-rendered WAV in-place.
+    if ((isPlaying || isPaused) && !webAudioReadyRef.current) {
       AudioPlaybackService.stop();
       setIsPlaying(false);
       setIsPaused(false);
@@ -611,6 +583,7 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
         const cachedRests = cached.notes.filter((n) => n.type === 'rest').length;
         console.log(`🗂️ Cache hit — ${cachedNotes} notes, ${cachedRests} rests (${cached.notes.length} events), skipping ${cachedEngineName}`);
         setScoreData(cached);
+        await persistScannedScore(cached, selectedEngine);
         setScanProgress(1);
         setProcessing(false);
         setProcessingStage('');
@@ -641,6 +614,7 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
       }
 
       setScoreData(run.result);
+      await persistScannedScore(run.result, run.engineKey);
       if (!skipCacheForThisRun) {
         OMRCacheService.set(imageUri, run.engineKey, run.result).catch(() => {});
       }
@@ -658,7 +632,7 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
       setProcessing(false);
       setProcessingStage('');
     }
-  }, [imageUri, updateScanProgress]);
+  }, [imageUri, persistScannedScore, updateScanProgress]);
 
   useEffect(() => {
     // Only process image if imageUri is provided; skip if scoreData was already loaded
@@ -671,8 +645,9 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
     ).then(() => {
       const presets = AudioPlaybackService.getAvailablePresets();
       if (presets.length > 0) {
-        setAvailablePresets(presets);
-        setSelectedPresetIndex(0);
+        const orderedPresets = orderInstrumentPresets(presets);
+        setAvailablePresets(orderedPresets);
+        setSelectedPresetIndex(orderedPresets[0]?.index ?? 0);
       }
     });
   }, [processScore, imageUri, incomingScoreData]);
@@ -786,7 +761,7 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
     doPrepare();
 
     return () => { cancelled = true; };
-  }, [scoreData, selectedPresetIndex, pitchHz]);
+  }, [scoreData, selectedPresetIndex]);
 
   /* ── Phase 2: Voice selection changes ── */
   /* Web Audio: voice selection is applied at play-time.                        */
@@ -797,7 +772,22 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
       // Web Audio path: voice selection is applied at play time, nothing to do
       // If currently playing, reschedule with new voice selection
       if (AudioPlaybackService.isPlaying) {
-        AudioPlaybackService.changeTempo(tempo, playbackVoiceSelection);
+        // Try native bridge first
+        const nativeBridge = nativeAudioBridgeRef.current;
+        if (nativeBridge?.isAvailable && nativeBridge?.isPlaying) {
+          try {
+            console.log(`[Native] Updating tempo to ${tempo} BPM`);
+            nativeBridge.setTempo(tempo).catch((e) => {
+              console.warn('Native bridge tempo update failed, using JS:', e.message);
+              AudioPlaybackService.changeTempo(tempo, playbackVoiceSelection);
+            });
+          } catch (e) {
+            console.warn('Native bridge error:', e.message);
+            AudioPlaybackService.changeTempo(tempo, playbackVoiceSelection);
+          }
+        } else {
+          AudioPlaybackService.changeTempo(tempo, playbackVoiceSelection);
+        }
       }
     } else if (AudioPlaybackService.isPlaying) {
       console.log('ℹ️ Voice selection changed during WAV playback; changes apply on next play session.');
@@ -854,62 +844,47 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
     }
   };
 
-  /**
-   * Change tempo — instant for Web Audio, re-render for legacy.
-   */
-  const reRenderForTempo = async (newTempo) => {
-    if (!scoreData) return;
-    if (newTempo === renderTempoRef.current) return;
-    renderTempoRef.current = newTempo;
+  const ensureFallbackRenderReadyForPlay = async (myId) => {
+    const desiredRenderSignature = `${selectedPresetIndex}|${Math.round(pitchHz * 10)}|${tempo}`;
+    const needsPreRender = !fallbackWavPreparedRef.current || fallbackRenderSignatureRef.current !== desiredRenderSignature;
+    if (!needsPreRender) return true;
 
-    if (webAudioReadyRef.current) {
-      // Web Audio path: instant tempo change (just reschedule events)
-      const result = AudioPlaybackService.changeTempo(newTempo, playbackVoiceSelection);
-      if (result) {
-        setTotalDuration(result.totalDuration);
-        setPitchTimeline(
-          ENABLE_PITCH_VIEW
-            ? buildPitchTimelineFromRawEvents(rawNoteEventsRef.current, newTempo)
-            : []
-        );
-        setPlaybackTime(0);
-      }
-      console.log(`✅ Instant tempo change: ${newTempo} BPM`);
-      return;
-    }
-
-    // Legacy WAV fallback: regenerate mixed audio at the selected tempo.
-    if (isPlaying || isPaused) {
-      await AudioPlaybackService.stop();
-      setIsPlaying(false);
-      setIsPaused(false);
-    }
-
-    const myId = ++prepareIdRef.current;
     const playbackNotes = getLiteralPlaybackNotes(scoreData);
-    const preRender = await AudioPlaybackService.preRenderVoiceTracks(playbackNotes, newTempo, {
-      measureBeats: scoreData?.metadata?.measureBeats,
-    });
+    setPreparing(true);
+    setPreparingStatusText('Applying tempo/pitch...');
+    try {
+      const preRender = await AudioPlaybackService.preRenderVoiceTracks(playbackNotes, tempo, {
+        measureBeats: scoreData?.metadata?.measureBeats,
+      });
 
-    if (!preRender || myId !== prepareIdRef.current) {
-      return;
+      if (myId !== prepareIdRef.current) {
+        return false;
+      }
+
+      if (!preRender) {
+        Alert.alert('Not Ready', 'Could not prepare audio for current tempo/pitch.');
+        return false;
+      }
+
+      fallbackWavPreparedRef.current = true;
+      fallbackRenderSignatureRef.current = desiredRenderSignature;
+      mixedVoiceSelectionKeyRef.current = '';
+      return true;
+    } finally {
+      if (myId === prepareIdRef.current) {
+        setPreparing(false);
+        setPreparingStatusText('');
+      }
     }
-
-    fallbackWavPreparedRef.current = true;
-    fallbackRenderSignatureRef.current = `${selectedPresetIndex}|${Math.round(pitchHz * 10)}|${newTempo}`;
-    setPitchTimeline(
-      ENABLE_PITCH_VIEW
-        ? buildPitchTimelineFromRawEvents(rawNoteEventsRef.current, newTempo)
-        : []
-    );
-    setPlaybackTime(0);
-    await doMix(myId, playbackVoiceSelection, 'Applying tempo...');
-    console.log(`✅ Tempo changed to ${newTempo} BPM with WAV regeneration`);
   };
 
   /* ── Playback controls ── */
   const handlePlay = async () => {
-    if (preparing) return;
+    if (preparing || playPressLockRef.current) return;
+    playPressLockRef.current = true;
+    setPlayPending(true);
+
+    try {
     AudioPlaybackService.setExternalBeatGuideOnsets(sharedBeatOffsetsForAudio, {
       measureBeats: scoreData?.metadata?.measureBeats,
       totalBeats: graphTotalBeats > 0 ? graphTotalBeats : preparedTotalBeats,
@@ -918,13 +893,26 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
     if (isPaused) {
       transportAnchorSecRef.current = playbackTime;
       transportAnchorTsRef.current = Date.now();
+      
+      // Try native bridge first if available and playing
+      const nativeBridge = nativeAudioBridgeRef.current;
+      if (nativeBridge?.isAvailable && nativeBridge?.isPaused) {
+        try {
+          await nativeBridge.resume();
+          setIsPlaying(true);
+          setIsPaused(false);
+          return;
+        } catch (e) {
+          console.warn('Native bridge resume failed, falling back to JS:', e.message);
+        }
+      }
+      
       await AudioPlaybackService.resume(playbackVoiceSelection);
       setIsPlaying(true);
       setIsPaused(false);
       return;
     }
 
-    setIsPlaying(true);
     setIsPaused(false);
     setPlaybackTime(0);
     lastPlaybackUiUpdateRef.current = 0;
@@ -932,6 +920,44 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
     transportAnchorSecRef.current = 0;
     transportAnchorTsRef.current = Date.now();
     renderedScoreRef.current?.resetPlayback?.();
+
+    // 🎵 Try native audio bridge first (super player)
+    const nativeBridge = nativeAudioBridgeRef.current;
+    if (nativeBridge?.isAvailable) {
+      try {
+        console.log(`🚀 handlePlay: Native Audio Bridge at ${tempo} BPM`);
+        
+        // Prepare notes with timing info
+        const notes = rawNoteEventsRef.current.map((note) => ({
+          pitch: note.midiPitch,
+          velocity: 100,
+          startTimeMs: (note.beatOnsetPos * 60000) / tempo,
+          durationMs: (note.beatDurationPos * 60000) / tempo,
+        }));
+
+        // Play via native bridge
+        await nativeBridge.play(notes, { sampleRate: 48000 });
+        
+        // Set up callbacks for page updates
+        const onFinished = () => {
+          setIsPlaying(false);
+          setIsPaused(false);
+          updatePlaybackPosition(totalDuration, true);
+        };
+        nativeBridge.onStatusChange((status, data) => {
+          if (status === 'STOPPED' || status === 'ERROR') {
+            onFinished();
+          }
+        });
+
+        setIsPlaying(true);
+        transportAnchorSecRef.current = 0;
+        transportAnchorTsRef.current = Date.now();
+        return;
+      } catch (e) {
+        console.warn('Native bridge play failed:', e.message, '— falling back to JS audio');
+      }
+    }
 
     if (webAudioReadyRef.current) {
       // Web Audio path: schedule all notes, no file needed
@@ -945,6 +971,14 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
         null,
         () => { setIsPlaying(false); setIsPaused(false); updatePlaybackPosition(totalDuration, true); }
       );
+      setIsPlaying(true);
+      return;
+    }
+
+    const preRenderId = ++prepareIdRef.current;
+    const fallbackReady = await ensureFallbackRenderReadyForPlay(preRenderId);
+    if (!fallbackReady) {
+      setIsPlaying(false);
       return;
     }
 
@@ -980,13 +1014,27 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
         },
         () => { setIsPlaying(false); setIsPaused(false); updatePlaybackPosition(totalDuration, true); }
       );
+      setIsPlaying(true);
     } catch (e) {
       console.error('Play error:', e);
       setIsPlaying(false);
     }
+    } finally {
+      playPressLockRef.current = false;
+      setPlayPending(false);
+    }
   };
 
   const handlePause = async () => {
+    const nativeBridge = nativeAudioBridgeRef.current;
+    if (nativeBridge?.isAvailable && nativeBridge?.isPlaying) {
+      try {
+        await nativeBridge.pause();
+      } catch (e) {
+        console.warn('Native bridge pause failed:', e.message);
+      }
+    }
+    
     await AudioPlaybackService.pause();
     transportAnchorSecRef.current = playbackTime;
     transportAnchorTsRef.current = Date.now();
@@ -995,6 +1043,15 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
   };
 
   const handleStop = async () => {
+    const nativeBridge = nativeAudioBridgeRef.current;
+    if (nativeBridge?.isAvailable && nativeBridge?.isPlaying) {
+      try {
+        await nativeBridge.stop();
+      } catch (e) {
+        console.warn('Native bridge stop failed:', e.message);
+      }
+    }
+    
     await AudioPlaybackService.stop();
     setIsPlaying(false);
     setIsPaused(false);
@@ -1187,8 +1244,26 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
     }
   };
 
-  const currentInstrumentName = availablePresets[selectedPresetIndex]?.name || 'Piano';
+  const currentInstrumentName =
+    availablePresets.find((preset) => preset.index === selectedPresetIndex)?.name || 'Piano';
   const pitchShiftLabel = `${Math.round(pitchHz)} Hz`;
+  const livePitchShiftLabel = `${Math.round(pitchSliderHz)} Hz`;
+  const selectedPitchPipe = PITCH_PIPE_NOTES[pitchPipeIndex] || PITCH_PIPE_NOTES[9];
+  const pitchPipeWheelPoints = useMemo(() => {
+    const wheelSize = 280;
+    const center = wheelSize / 2;
+    const radius = 106;
+    return PITCH_PIPE_NOTES.map((note, idx) => {
+      const angleDeg = -90 + idx * (360 / PITCH_PIPE_NOTES.length);
+      const angle = (angleDeg * Math.PI) / 180;
+      return {
+        idx,
+        note,
+        left: center + radius * Math.cos(angle),
+        top: center + radius * Math.sin(angle),
+      };
+    });
+  }, []);
   const timepointGraph = useMemo(() => {
     return Array.isArray(preparedTimepointGraph) ? preparedTimepointGraph : [];
   }, [preparedTimepointGraph]);
@@ -1253,6 +1328,24 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
       totalBeats: graphTotalBeats > 0 ? graphTotalBeats : preparedTotalBeats,
     });
   }, [sharedBeatOffsetsForAudio, scoreData, preparedTotalBeats, graphTotalBeats]);
+
+  useEffect(() => {
+    setPitchPipeIndex(getNearestPitchPipeIndex(pitchSliderHz));
+  }, [pitchSliderHz]);
+
+  const applyPitchPipeIndex = useCallback((idx) => {
+    const safeIdx = Math.max(0, Math.min(PITCH_PIPE_NOTES.length - 1, idx));
+    const note = PITCH_PIPE_NOTES[safeIdx];
+    if (!note) return;
+    AudioPlaybackService.playPitchPreviewHz(note.hz, { durationMs: 620, retriggerMs: 24, gain: 0.85 });
+    if (note.hz === pitchHz && note.hz === pitchSliderHz) {
+      setPitchPipeIndex(safeIdx);
+      return;
+    }
+    setPitchPipeIndex(safeIdx);
+    setPitchSliderHz(note.hz);
+    setPitchHz(note.hz);
+  }, [pitchHz, pitchSliderHz]);
 
   useEffect(() => {
     const beatTotalForRender = playbackTotalBeats;
@@ -1375,8 +1468,8 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
     });
 
     return (
-      <View style={styles.centerContainer}>
-        <StatusBar barStyle="dark-content" backgroundColor={palette.background} />
+      <View style={[styles.centerContainer, { backgroundColor: theme.background }]}>
+        <StatusBar barStyle={getStatusBarStyleForTheme({ colors: theme })} backgroundColor={theme.background} />
         <View style={styles.loadingLogoWrap}>
           <WebView
             originWhitelist={["*"]}
@@ -1388,17 +1481,17 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
           />
         </View>
 
-        <Text style={styles.scanningText}>Scanning...</Text>
-        <Text style={styles.scanningFileText}>{scanningFileName}</Text>
+        <Text style={[styles.scanningText, { color: theme.ink }]}>Scanning...</Text>
+        <Text style={[styles.scanningFileText, { color: theme.inkMuted }]}>{scanningFileName}</Text>
         {processingStage && (
-          <Text style={styles.processingStageText}>{processingStage}</Text>
+          <Text style={[styles.processingStageText, { color: theme.inkMuted }]}>{processingStage}</Text>
         )}
 
-        <View style={styles.loadingBarTrack}>
+        <View style={[styles.loadingBarTrack, { backgroundColor: theme.border }]}>
           <Animated.View style={[styles.loadingBarPulse, { width: barWidth }]} />
         </View>
-        <TouchableOpacity style={styles.cancelScanButton} onPress={cancelScan}>
-          <Text style={styles.cancelScanButtonText}>Cancel Scan</Text>
+        <TouchableOpacity style={[styles.cancelScanButton, { backgroundColor: theme.surfaceStrong, borderColor: theme.border }]} onPress={cancelScan}>
+          <Text style={[styles.cancelScanButtonText, { color: theme.inkMuted }]}>Cancel Scan</Text>
         </TouchableOpacity>
       </View>
     );
@@ -1406,15 +1499,15 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
 
   if (scoreError || !scoreData) {
     return (
-      <View style={styles.centerContainer}>
-        <StatusBar barStyle="dark-content" backgroundColor={palette.background} />
-        <Text style={styles.errorTitle}>Unable to load score</Text>
-        <Text style={styles.errorText}>{scoreError || 'Unknown error'}</Text>
-        <TouchableOpacity style={styles.retryButton} onPress={processScore}>
-          <Text style={styles.retryButtonText}>Retry</Text>
+      <View style={[styles.centerContainer, { backgroundColor: theme.background }]}>
+        <StatusBar barStyle={getStatusBarStyleForTheme({ colors: theme })} backgroundColor={theme.background} />
+        <Text style={[styles.errorTitle, { color: theme.ink }]}>Unable to load score</Text>
+        <Text style={[styles.errorText, { color: theme.inkMuted }]}>{scoreError || 'Unknown error'}</Text>
+        <TouchableOpacity style={[styles.retryButton, { backgroundColor: theme.surface, borderColor: theme.border }]} onPress={processScore}>
+          <Text style={[styles.retryButtonText, { color: theme.ink }]}>Retry</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={[styles.retryButton, { marginTop: 10 }]} onPress={onNavigateBack}>
-          <Text style={styles.retryButtonText}>Back</Text>
+        <TouchableOpacity style={[styles.retryButton, { marginTop: 10, backgroundColor: theme.surface, borderColor: theme.border }]} onPress={onNavigateBack}>
+          <Text style={[styles.retryButtonText, { color: theme.ink }]}>Back</Text>
         </TouchableOpacity>
       </View>
     );
@@ -1422,7 +1515,7 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor={palette.background} />
+      <StatusBar barStyle={getStatusBarStyleForTheme({ colors: theme })} backgroundColor={theme.background} />
 
       {/* Header */}
       <View
@@ -1446,82 +1539,109 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
 
       {/* Voice controls moved to top for quick access */}
       <View style={[styles.topVoiceBar, { paddingLeft: 12 + insets.left, paddingRight: 12 + insets.right }]}>
-        <View style={styles.topVoicePill}>
+        <View style={styles.topVoiceRow}>
+          <View style={[styles.topVoicePill, { backgroundColor: theme.surface, borderColor: theme.border }]}> 
+            <Pressable
+              style={({ pressed }) => [
+                styles.topVoiceDot,
+                {
+                  backgroundColor: allVisibleVoicesSelected ? theme.surfaceStrong : theme.background,
+                  borderColor: allVisibleVoicesSelected ? theme.accent : theme.border,
+                },
+                pressed && styles.pressedDot,
+              ]}
+              onPress={allVoicesOn}
+            >
+              <Text
+                style={[
+                  styles.topVoiceDotText,
+                  { color: allVisibleVoicesSelected ? theme.ink : theme.inkMuted },
+                ]}
+              >
+                All
+              </Text>
+            </Pressable>
+            {Object.keys(voiceSelection).map((voice) => {
+              const vc = scoreData?.metadata?.voiceCounts || {};
+              const hasVoiceCounts = Object.keys(vc).length > 0;
+              const cnt = vc[voice] || 0;
+              const isEmpty = hasVoiceCounts && cnt === 0;
+              const voiceLabel =
+                voice === 'Soprano'
+                  ? 'Soprano'
+                  : voice === 'Alto'
+                    ? 'Alto'
+                    : voice === 'Tenor'
+                      ? 'Tenor'
+                      : voice === 'Bass'
+                        ? 'Bass'
+                        : voice;
+              return (
+                <Pressable
+                  key={voice}
+                  style={({ pressed }) => [
+                    styles.topVoiceDot,
+                    {
+                      backgroundColor: isEmpty
+                        ? theme.surface
+                        : effectiveVoiceSelection[voice]
+                          ? theme.surfaceStrong
+                          : theme.background,
+                      borderColor: isEmpty
+                        ? theme.border
+                        : effectiveVoiceSelection[voice]
+                          ? theme.accent
+                          : theme.border,
+                      opacity: isEmpty ? 0.55 : 1,
+                    },
+                    pressed && !isEmpty && styles.pressedDot,
+                  ]}
+                  onPress={() => (isEmpty ? null : toggleVoice(voice))}
+                  onLongPress={() => (isEmpty ? null : soloVoice(voice))}
+                  disabled={isEmpty}
+                >
+                  <Text
+                    style={[
+                      styles.topVoiceDotText,
+                      { color: isEmpty ? theme.inkMuted : effectiveVoiceSelection[voice] ? theme.ink : theme.inkMuted },
+                    ]}
+                  >
+                    {voiceLabel}{isEmpty ? ' ⊘' : ''}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+
           <Pressable
             style={({ pressed }) => [
-              styles.topVoiceDot,
-              allVisibleVoicesSelected ? styles.topVoiceDotAll : styles.topVoiceDotInactive,
-              pressed && styles.pressedDot,
+              styles.topPitchPipeButton,
+              {
+                backgroundColor: theme.surface,
+                borderColor: showPitchPipeModal ? theme.accent : theme.border,
+              },
+              pressed && styles.pressedPill,
             ]}
-            onPress={allVoicesOn}
+            onPress={() => setShowPitchPipeModal(true)}
           >
-            <Text
-              style={[
-                styles.topVoiceDotText,
-                allVisibleVoicesSelected ? styles.topVoiceDotTextActive : styles.topVoiceDotTextInactive,
-              ]}
-            >
-              All
-            </Text>
+            <Image
+              source={require('../../assets/pitch_pipe_dark.gif')}
+              style={{ width: 38, height: 38 }}
+            />
           </Pressable>
-          {Object.keys(voiceSelection).map((voice) => {
-            const vc = scoreData?.metadata?.voiceCounts || {};
-            const hasVoiceCounts = Object.keys(vc).length > 0;
-            const cnt = vc[voice] || 0;
-            const isEmpty = hasVoiceCounts && cnt === 0;
-            const voiceLabel =
-              voice === 'Soprano'
-                ? 'Soprano'
-                : voice === 'Alto'
-                  ? 'Alto'
-                  : voice === 'Tenor'
-                    ? 'Tenor'
-                    : voice === 'Bass'
-                      ? 'Bass'
-                      : voice;
-            return (
-              <Pressable
-                key={voice}
-                style={({ pressed }) => [
-                  styles.topVoiceDot,
-                  isEmpty
-                    ? styles.topVoiceDotEmpty
-                    : effectiveVoiceSelection[voice]
-                      ? styles.topVoiceDotActive
-                      : styles.topVoiceDotInactive,
-                  pressed && !isEmpty && styles.pressedDot,
-                ]}
-                onPress={() => (isEmpty ? null : toggleVoice(voice))}
-                onLongPress={() => (isEmpty ? null : soloVoice(voice))}
-                disabled={isEmpty}
-              >
-                <Text
-                  style={[
-                    styles.topVoiceDotText,
-                    isEmpty
-                      ? styles.topVoiceDotTextInactive
-                      : effectiveVoiceSelection[voice]
-                        ? styles.topVoiceDotTextActive
-                        : styles.topVoiceDotTextInactive,
-                  ]}
-                >
-                  {voiceLabel}{isEmpty ? ' ⊘' : ''}
-                </Text>
-              </Pressable>
-            );
-          })}
         </View>
       </View>
 
       {/* Score view */}
-      <View style={[styles.viewerArea, { marginLeft: 12 + insets.left, marginRight: 12 + insets.right }]}>
+      <View style={[styles.viewerArea, { marginLeft: 12 + insets.left, marginRight: 12 + insets.right, backgroundColor: theme.surface, borderColor: theme.border }]}> 
         {scoreViewMode === 'rendered' ? (
           <RenderedScoreView
             ref={renderedScoreRef}
             musicXml={scoreData?.musicXml || ''}
             currentBeat={renderedProgressProp}
             playheadMode={renderedPlayheadMode}
-            playheadColor={RENDERED_HIGHLIGHT_COLORS[renderedHighlightColorIdx]}
+            playheadColor={RENDERED_LINE_COLORS[renderedLineColorIdx]}
+            playheadNoteColor={RENDERED_NOTE_COLORS[renderedNoteColorIdx]}
             renderViewPreset={renderViewPreset}
             showControlBar={false}
             onSeekNormalizedBeat={(normalizedBeat) => {
@@ -1535,9 +1655,15 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
             onPlayheadModeChange={setRenderedPlayheadMode}
             onRenderViewPresetChange={setRenderViewPreset}
             onPlayheadColorChange={(color) => {
-              const idx = RENDERED_HIGHLIGHT_COLORS.indexOf(color);
+              const idx = RENDERED_LINE_COLORS.indexOf(color);
               if (idx >= 0) {
-                setRenderedHighlightColorIdx(idx);
+                setRenderedLineColorIdx(idx);
+              }
+            }}
+            onPlayheadNoteColorChange={(color) => {
+              const idx = RENDERED_NOTE_COLORS.indexOf(color);
+              if (idx >= 0) {
+                setRenderedNoteColorIdx(idx);
               }
             }}
           />
@@ -1555,164 +1681,201 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
             voiceSelection={voiceSelection}
             debugNotes={scoreData?.notes}
             timelineMode={AUDIO_TIMELINE_MODE}
+            theme={theme}
           />
         )}
       </View>
 
-      {/* Tempo slider drawer */}
-      {showTempoSlider && (
-        <View style={[styles.tempoDrawer, { paddingLeft: 16 + insets.left, paddingRight: 16 + insets.right }]}>
-          <View style={styles.tempoDrawerRow}>
-            <Text style={styles.tempoDrawerLabel}>Tempo</Text>
-            <Text style={styles.tempoDrawerValue}>♩ = {sliderTempo}</Text>
-          </View>
-          <Slider
-            style={styles.tempoSlider}
-            minimumValue={40}
-            maximumValue={240}
-            step={1}
-            value={sliderTempo}
-            onValueChange={(v) => {
-              const bpm = Math.round(v);
-              setSliderTempo(bpm);
-              // Web Audio: instant live tempo change while dragging
-              if (webAudioReadyRef.current) {
-                setTempo(bpm);
-                reRenderForTempo(bpm);
-              }
-            }}
-            onSlidingComplete={(v) => {
-              const bpm = Math.round(v);
-              setSliderTempo(bpm);
-              setTempo(bpm);
-              reRenderForTempo(bpm);
-            }}
-            minimumTrackTintColor={barPalette.accent}
-            maximumTrackTintColor={barPalette.barBorder}
-            thumbTintColor={barPalette.accent}
-          />
-          <View style={styles.tempoPresets}>
-            {[
-              { label: 'Slow',    bpm: 72 },
-              { label: 'Original', bpm: scoreData?.metadata?.tempo || 120 },
-              { label: 'Fast',    bpm: 160 },
-            ].map((p) => (
-              <TouchableOpacity
-                key={p.label}
-                style={[
-                  styles.tempoPresetBtn,
-                  Math.abs(tempo - p.bpm) < 10 && styles.tempoPresetBtnActive,
-                ]}
-                onPress={() => { setSliderTempo(p.bpm); setTempo(p.bpm); reRenderForTempo(p.bpm); }}
-              >
-                <Text
-                  style={[
-                    styles.tempoPresetText,
-                    Math.abs(tempo - p.bpm) < 10 && styles.tempoPresetTextActive,
-                  ]}
-                >
-                  {p.label}
-                </Text>
+      {/* Combined Tempo + Pitch modal */}
+      <Modal
+        visible={showAudioControls}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowAudioControls(false)}
+      >
+        <View style={styles.audioControlsOverlay}>
+          <View style={[styles.audioControlsPanel, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+            <View style={[styles.audioControlsHeader, { borderBottomColor: theme.border }]}>
+              <Text style={[styles.audioControlsTitle, { color: theme.ink }]}>Audio Control</Text>
+              <TouchableOpacity onPress={() => setShowAudioControls(false)} style={[styles.audioControlsCloseButton, { backgroundColor: theme.surfaceStrong, borderColor: theme.border }]}>
+                <Feather name="x" size={20} color={theme.ink} />
               </TouchableOpacity>
-            ))}
-          </View>
-        </View>
-      )}
+            </View>
+            <ScrollView showsVerticalScrollIndicator={false} style={styles.audioControlsScroll}>
+              {/* Tempo Control */}
+              <View style={[styles.audioControlBlock, { backgroundColor: theme.surfaceStrong, borderColor: theme.border, borderLeftColor: theme.accent }]}>
+                <View style={styles.audioControlRow}>
+                  <Text style={[styles.audioControlLabel, { color: theme.inkMuted }]}>Tempo</Text>
+                  <Text style={[styles.audioControlValue, { color: theme.ink }]}>♩ = {sliderTempo}</Text>
+                </View>
+                <Slider
+                  style={styles.audioSlider}
+                  minimumValue={40}
+                  maximumValue={240}
+                  step={1}
+                  value={sliderTempo}
+                  onValueChange={(v) => {
+                    const bpm = Math.round(v);
+                    setSliderTempo(bpm);
+                    if (isPlaying && webAudioReadyRef.current) {
+                      setTempo(bpm);
+                      const nativeBridge = nativeAudioBridgeRef.current;
+                      if (nativeBridge?.isAvailable && nativeBridge?.isPlaying) {
+                        try {
+                          console.log(`[Native] Tempo slider → ${bpm} BPM`);
+                          nativeBridge.setTempo(bpm).catch((e) => {
+                            console.warn('Native tempo change failed, using JS:', e.message);
+                            const result = AudioPlaybackService.changeTempo(bpm, playbackVoiceSelection);
+                            if (result) {
+                              setTotalDuration(result.totalDuration);
+                              setPitchTimeline(
+                                ENABLE_PITCH_VIEW
+                                  ? buildPitchTimelineFromRawEvents(rawNoteEventsRef.current, bpm)
+                                  : []
+                              );
+                            }
+                          });
+                        } catch (e) {
+                          console.warn('Native bridge error:', e.message);
+                          const result = AudioPlaybackService.changeTempo(bpm, playbackVoiceSelection);
+                          if (result) {
+                            setTotalDuration(result.totalDuration);
+                            setPitchTimeline(
+                              ENABLE_PITCH_VIEW
+                                ? buildPitchTimelineFromRawEvents(rawNoteEventsRef.current, bpm)
+                                : []
+                            );
+                          }
+                        }
+                      } else {
+                        const result = AudioPlaybackService.changeTempo(bpm, playbackVoiceSelection);
+                        if (result) {
+                          setTotalDuration(result.totalDuration);
+                          setPitchTimeline(
+                            ENABLE_PITCH_VIEW
+                              ? buildPitchTimelineFromRawEvents(rawNoteEventsRef.current, bpm)
+                              : []
+                          );
+                        }
+                      }
+                    }
+                  }}
+                  onSlidingComplete={(v) => {
+                    const bpm = Math.round(v);
+                    setSliderTempo(bpm);
+                    setTempo(bpm);
+                    if (isPlaying && webAudioReadyRef.current) {
+                      const result = AudioPlaybackService.changeTempo(bpm, playbackVoiceSelection);
+                      if (result) {
+                        setTotalDuration(result.totalDuration);
+                        setPitchTimeline(
+                          ENABLE_PITCH_VIEW
+                            ? buildPitchTimelineFromRawEvents(rawNoteEventsRef.current, bpm)
+                            : []
+                        );
+                      }
+                    }
+                  }}
+                  minimumTrackTintColor={theme.accent}
+                  maximumTrackTintColor={theme.border}
+                  thumbTintColor={theme.accent}
+                />
+              </View>
 
-      {showPitchSlider && (
-        <View style={[styles.tempoDrawer, { paddingLeft: 16 + insets.left, paddingRight: 16 + insets.right }]}>
-          <View style={styles.tempoDrawerRow}>
-            <Text style={styles.tempoDrawerLabel}>Pitch Ref</Text>
-            <Text style={styles.tempoDrawerValue}>{pitchShiftLabel}</Text>
-          </View>
-          <Slider
-            style={styles.tempoSlider}
-            minimumValue={380}
-            maximumValue={480}
-            step={1}
-            value={pitchSliderHz}
-            onValueChange={(v) => setPitchSliderHz(Math.round(v))}
-            onSlidingComplete={(v) => {
-              const nextHz = Math.max(380, Math.min(480, Math.round(v)));
-              setPitchSliderHz(nextHz);
-              if (nextHz !== pitchHz) {
-                setPitchHz(nextHz);
-              }
-            }}
-            minimumTrackTintColor={barPalette.accent}
-            maximumTrackTintColor={barPalette.barBorder}
-            thumbTintColor={barPalette.accent}
-          />
-          <View style={styles.tempoPresets}>
-            {[
-              { label: '432', hz: 432 },
-              { label: '440', hz: 440 },
-              { label: '442', hz: 442 },
-              { label: 'Baroque', hz: 415 },
-            ].map((p) => (
-              <TouchableOpacity
-                key={p.label}
-                style={[
-                  styles.tempoPresetBtn,
-                  pitchHz === p.hz && styles.tempoPresetBtnActive,
-                ]}
-                onPress={() => {
-                  setPitchSliderHz(p.hz);
-                  setPitchHz(p.hz);
-                }}
-              >
-                <Text
-                  style={[
-                    styles.tempoPresetText,
-                    pitchHz === p.hz && styles.tempoPresetTextActive,
-                  ]}
-                >
-                  {p.label}
-                </Text>
-              </TouchableOpacity>
-            ))}
+              {/* Pitch Control */}
+              <View style={[styles.audioControlBlock, { backgroundColor: theme.surfaceStrong, borderColor: theme.border, borderLeftColor: theme.accent }]}>
+                <View style={styles.audioControlRow}>
+                  <Text style={[styles.audioControlLabel, { color: theme.inkMuted }]}>Pitch Ref</Text>
+                  <Text style={[styles.audioControlValue, { color: theme.ink }]}>{livePitchShiftLabel}</Text>
+                </View>
+                <Slider
+                  style={styles.audioSlider}
+                  minimumValue={PITCH_PIPE_MIN_HZ}
+                  maximumValue={PITCH_PIPE_MAX_HZ}
+                  step={1}
+                  value={pitchSliderHz}
+                  onValueChange={(v) => {
+                    const nextHz = Math.max(PITCH_PIPE_MIN_HZ, Math.min(PITCH_PIPE_MAX_HZ, Math.round(v)));
+                    setPitchSliderHz(nextHz);
+                    if (isPlaying && webAudioReadyRef.current) {
+                      setPitchHz(nextHz);
+                    }
+                  }}
+                  onSlidingComplete={(v) => {
+                    const nextHz = Math.max(PITCH_PIPE_MIN_HZ, Math.min(PITCH_PIPE_MAX_HZ, Math.round(v)));
+                    setPitchSliderHz(nextHz);
+                    if (nextHz !== pitchHz) {
+                      setPitchHz(nextHz);
+                    }
+                  }}
+                  minimumTrackTintColor={theme.accent}
+                  maximumTrackTintColor={theme.border}
+                  thumbTintColor={theme.accent}
+                />
+              </View>
+            </ScrollView>
           </View>
         </View>
-      )}
+      </Modal>
 
       {/* Timeline seek slider */}
-      <View style={[styles.seekBarWrap, { paddingLeft: 14 + insets.left, paddingRight: 14 + insets.right }]}>
-        <View style={styles.seekBarHeader}>
+      <View
+        style={[
+          styles.seekBarWrap,
+          !showTimeline && styles.seekBarWrapCollapsed,
+          { paddingLeft: 14 + insets.left, paddingRight: 14 + insets.right },
+        ]}
+      >
+        <Pressable
+          style={({ pressed }) => [styles.seekBarHeader, !showTimeline && styles.seekBarHeaderCollapsed, pressed && styles.pressedPill]}
+          onPress={() => setShowTimeline((v) => !v)}
+        >
           <Text style={styles.seekBarLabel}>Timeline</Text>
-          <Text style={styles.seekBarTimeText}>
-            {formatTime(seekDisplayTime)} / {formatTime(seekMaxDuration)}
-          </Text>
-        </View>
-        <Slider
-          style={styles.seekSlider}
-          minimumValue={0}
-          maximumValue={Math.max(0.001, seekMaxDuration)}
-          value={Math.max(0, Math.min(seekSliderRenderValue, Math.max(0.001, seekMaxDuration)))}
-          onSlidingStart={() => {
-            setSeekSliderValue(Math.max(0, Math.min(playbackTime, Math.max(0.001, seekMaxDuration))));
-            setIsSeekSliding(true);
-            previewSeekCursor(playbackTime);
-          }}
-          onValueChange={(v) => {
-            if (!isSeekSliding) return;
-            const target = Math.max(0, Math.min(v, seekMaxDuration));
-            setSeekSliderValue((prev) => (Math.abs(prev - target) > 0.005 ? target : prev));
-            previewSeekCursor(target);
-          }}
-          onSlidingComplete={async (v) => {
-            const target = Math.max(0, Math.min(v, seekMaxDuration));
-            setSeekSliderValue(target);
-            previewSeekCursor(target);
-            if (seekMaxDuration > 0) {
-              await handleSeek(target);
-            }
-            setIsSeekSliding(false);
-          }}
-          disabled={seekMaxDuration <= 0}
-          minimumTrackTintColor={barPalette.accent}
-          maximumTrackTintColor={barPalette.barBorder}
-          thumbTintColor={barPalette.accent}
-        />
+          <View style={styles.timelineHeaderRight}>
+            {showTimeline && (
+              <Text style={styles.seekBarTimeText}>
+                {formatTime(seekDisplayTime)} / {formatTime(seekMaxDuration)}
+              </Text>
+            )}
+            <Feather
+              name={showTimeline ? 'chevron-down' : 'chevron-up'}
+              size={20}
+              color={barPalette.barTextMuted}
+            />
+          </View>
+        </Pressable>
+        {showTimeline && (
+          <Slider
+            style={styles.seekSlider}
+            minimumValue={0}
+            maximumValue={Math.max(0.001, seekMaxDuration)}
+            value={Math.max(0, Math.min(seekSliderRenderValue, Math.max(0.001, seekMaxDuration)))}
+            onSlidingStart={() => {
+              setSeekSliderValue(Math.max(0, Math.min(playbackTime, Math.max(0.001, seekMaxDuration))));
+              setIsSeekSliding(true);
+              previewSeekCursor(playbackTime);
+            }}
+            onValueChange={(v) => {
+              if (!isSeekSliding) return;
+              const target = Math.max(0, Math.min(v, seekMaxDuration));
+              setSeekSliderValue((prev) => (Math.abs(prev - target) > 0.005 ? target : prev));
+              previewSeekCursor(target);
+            }}
+            onSlidingComplete={async (v) => {
+              const target = Math.max(0, Math.min(v, seekMaxDuration));
+              setSeekSliderValue(target);
+              previewSeekCursor(target);
+              if (seekMaxDuration > 0) {
+                await handleSeek(target);
+              }
+              setIsSeekSliding(false);
+            }}
+            disabled={seekMaxDuration <= 0}
+            minimumTrackTintColor={barPalette.accent}
+            maximumTrackTintColor={barPalette.barBorder}
+            thumbTintColor={barPalette.accent}
+          />
+        )}
       </View>
 
       {/* Transport bar */}
@@ -1739,7 +1902,7 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
               pressed && styles.pressedPill,
             ]}
             onPress={isPlaying ? handlePause : handlePlay}
-            disabled={preparing}
+            disabled={preparing || playPending}
           >
             <Feather
               name={isPlaying ? 'pause' : 'play'}
@@ -1747,7 +1910,7 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
               color={isPaused && !isPlaying ? barPalette.accent : barPalette.barText}
             />
             <Text style={styles.playPillText}>
-              {preparing ? 'Preparing...' : isPlaying ? 'Pause' : isPaused ? 'Resume' : 'Play'}
+              {(preparing || playPending) ? 'Preparing...' : isPlaying ? 'Pause' : isPaused ? 'Resume' : 'Play'}
             </Text>
           </Pressable>
 
@@ -1756,154 +1919,13 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
             <Feather name="square" size={14} color={barPalette.barText} />
           </Pressable>
 
-          {/* Tempo */}
+          {/* Audio Controls (Tempo + Pitch) */}
           <Pressable
-            style={({ pressed }) => [styles.zoomPill, showTempoSlider && { borderColor: barPalette.accent }, pressed && styles.pressedPill]}
-            onPress={() => {
-              setShowPitchSlider(false);
-              setShowTempoSlider((v) => !v);
-            }}
+            style={({ pressed }) => [styles.iconPill, showAudioControls && { borderColor: barPalette.accent }, pressed && styles.pressedPill]}
+            onPress={() => setShowAudioControls((v) => !v)}
           >
-            <Feather name="activity" size={12} color={barPalette.barTextMuted} />
-            <Text style={styles.pillText}>{tempo} BPM</Text>
+            <Feather name="sliders" size={14} color={showAudioControls ? barPalette.accent : barPalette.barText} />
           </Pressable>
-
-          {/* Pitch reference */}
-          <Pressable
-            style={({ pressed }) => [
-              styles.zoomPill,
-              showPitchSlider && { borderColor: barPalette.accent },
-              pressed && styles.pressedPill,
-            ]}
-            onPress={() => {
-              setShowTempoSlider(false);
-              setShowPitchSlider((v) => !v);
-            }}
-          >
-            <Feather name="music" size={12} color={barPalette.barTextMuted} />
-            <Text style={styles.pillText}>Pitch {pitchShiftLabel}</Text>
-          </Pressable>
-
-          {/* Export MusicXML */}
-          <Pressable
-            style={({ pressed }) => [styles.zoomPill, pressed && styles.pressedPill]}
-            onPress={handleExportMusicXml}
-          >
-            <Feather name="download" size={12} color={barPalette.barTextMuted} />
-            <Text style={styles.pillText}>Export XML</Text>
-          </Pressable>
-
-          <Pressable
-            style={({ pressed }) => [styles.zoomPill, pressed && styles.pressedPill]}
-            onPress={handleExportWav}
-          >
-            <Feather name="music" size={12} color={barPalette.barTextMuted} />
-            <Text style={styles.pillText}>Export WAV</Text>
-          </Pressable>
-
-          {scoreViewMode === 'rendered' && (
-            <Pressable
-              style={({ pressed }) => [
-                styles.zoomPill,
-                pressed && styles.pressedPill,
-                renderViewPreset === 'smart' && { borderColor: barPalette.accent },
-              ]}
-              onPress={() => {
-                setRenderViewPreset((preset) => (preset === 'fit' ? 'smart' : 'fit'));
-              }}
-            >
-              <Feather name="maximize" size={12} color={barPalette.barTextMuted} />
-              <Text style={styles.pillText}>View {renderViewPreset}</Text>
-            </Pressable>
-          )}
-
-          {scoreViewMode === 'rendered' && (
-            <Pressable
-              style={({ pressed }) => [
-                styles.zoomPill,
-                pressed && styles.pressedPill,
-                renderedPlayheadMode !== 'notes' && { borderColor: barPalette.accent },
-              ]}
-              onPress={() => setRenderedPlayheadMode((mode) => {
-                const idx = RENDERED_PLAYHEAD_MODES.indexOf(mode);
-                return RENDERED_PLAYHEAD_MODES[(idx + 1) % RENDERED_PLAYHEAD_MODES.length];
-              })}
-            >
-              <Feather
-                name={renderedPlayheadMode === 'line' ? 'minus' : renderedPlayheadMode === 'both' ? 'crosshair' : 'disc'}
-                size={12}
-                color={barPalette.barTextMuted}
-              />
-              <Text style={styles.pillText}>Playhead {renderedPlayheadMode}</Text>
-            </Pressable>
-          )}
-
-          {/* Clef filters */}
-          <Pressable
-            style={({ pressed }) => [
-              styles.zoomPill,
-              pressed && styles.pressedPill,
-              activeClefPreset === 'upper' && { borderColor: barPalette.accent },
-            ]}
-            onPress={() => changeClefFilter('upper')}
-          >
-            <Feather name="arrow-up" size={12} color={barPalette.barTextMuted} />
-            <Text style={styles.pillText}>Upper Clef</Text>
-          </Pressable>
-
-          <Pressable
-            style={({ pressed }) => [
-              styles.zoomPill,
-              pressed && styles.pressedPill,
-              activeClefPreset === 'lower' && { borderColor: barPalette.accent },
-            ]}
-            onPress={() => changeClefFilter('lower')}
-          >
-            <Feather name="arrow-down" size={12} color={barPalette.barTextMuted} />
-            <Text style={styles.pillText}>Lower Clef</Text>
-          </Pressable>
-
-          {/* Score view mode */}
-          <Pressable
-            style={({ pressed }) => [
-              styles.zoomPill,
-              pressed && styles.pressedPill,
-              scoreViewMode === 'rendered' && { borderColor: barPalette.accent },
-            ]}
-            onPress={() => setScoreViewMode((m) => (m === 'rendered' ? 'scan' : 'rendered'))}
-          >
-            <Feather
-              name={scoreViewMode === 'rendered' ? 'layout' : 'image'}
-              size={12}
-              color={barPalette.barTextMuted}
-            />
-            <Text
-              style={[
-                styles.scoreModeText,
-                scoreViewMode === 'scan' && styles.scoreModeTextScan,
-              ]}
-            >
-              {scoreViewMode === 'rendered' ? 'Rendered score' : 'Scanned score'}
-            </Text>
-          </Pressable>
-
-          {/* Progress indicator */}
-          <View style={styles.viewPill}>
-            <Text style={styles.pillText}>
-              {preparing && preparingStatusText
-                ? preparingStatusText
-                : isPaused && !isPlaying
-                ? `Paused • ${formatTime(playbackTime)} / ${formatTime(totalDuration)}`
-                : `${formatTime(playbackTime)} / ${formatTime(totalDuration)}`}
-            </Text>
-          </View>
-
-          {/* Score info button (compact pill) */}
-          <ScoreInfoPanel
-            metadata={scoreData.metadata}
-            currentBeat={currentBeat}
-            isPlaying={isPlaying}
-          />
 
           {/* Instrument selector */}
           {availablePresets.length > 0 && (
@@ -1922,8 +1944,227 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
               </Text>
             </Pressable>
           )}
+
+          {/* Overflow controls */}
+          <Pressable
+            style={({ pressed }) => [styles.iconPill, showOverflowMenu && { borderColor: barPalette.accent }, pressed && styles.pressedPill]}
+            onPress={() => setShowOverflowMenu(true)}
+          >
+            <Feather name="more-horizontal" size={15} color={barPalette.barText} />
+          </Pressable>
+
+          {/* Score info button (compact pill) */}
+          <ScoreInfoPanel
+            metadata={scoreData.metadata}
+            currentBeat={currentBeat}
+            isPlaying={isPlaying}
+          />
         </ScrollView>
       </View>
+
+      {/* Overflow menu modal */}
+      <Modal
+        visible={showOverflowMenu}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowOverflowMenu(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { paddingBottom: insets.bottom + 12, backgroundColor: theme.background }]}> 
+            <View style={[styles.modalHeader, { borderBottomColor: theme.border }]}> 
+              <Text style={[styles.modalTitle, { color: theme.ink }]}>More Controls</Text>
+              <TouchableOpacity onPress={() => setShowOverflowMenu(false)}>
+                <Feather name="x" size={18} color={theme.inkMuted} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.overflowActionsList}>
+              <Pressable
+                style={({ pressed }) => [styles.overflowActionRow, { borderBottomColor: theme.border, backgroundColor: pressed ? theme.surfaceStrong : 'transparent' }]}
+                onPress={() => {
+                  setShowOverflowMenu(false);
+                  handleExportMusicXml();
+                }}
+              >
+                <Feather name="download" size={14} color={theme.inkMuted} />
+                <Text style={[styles.overflowActionText, { color: theme.ink }]}>Export XML</Text>
+              </Pressable>
+
+              <Pressable
+                style={({ pressed }) => [styles.overflowActionRow, { borderBottomColor: theme.border, backgroundColor: pressed ? theme.surfaceStrong : 'transparent' }]}
+                onPress={() => {
+                  setShowOverflowMenu(false);
+                  handleExportWav();
+                }}
+              >
+                <Feather name="music" size={14} color={theme.inkMuted} />
+                <Text style={[styles.overflowActionText, { color: theme.ink }]}>Export WAV</Text>
+              </Pressable>
+
+              {scoreViewMode === 'rendered' && (
+                <Pressable
+                  style={({ pressed }) => [styles.overflowActionRow, { borderBottomColor: theme.border, backgroundColor: pressed ? theme.surfaceStrong : 'transparent' }]}
+                  onPress={() => {
+                    setRenderViewPreset((preset) => (preset === 'fit' ? 'smart' : 'fit'));
+                  }}
+                >
+                  <Feather name="maximize" size={14} color={theme.inkMuted} />
+                  <Text style={[styles.overflowActionText, { color: theme.ink }]}>View preset: {renderViewPreset}</Text>
+                </Pressable>
+              )}
+
+              {scoreViewMode === 'rendered' && (
+                <Pressable
+                  style={({ pressed }) => [styles.overflowActionRow, { borderBottomColor: theme.border, backgroundColor: pressed ? theme.surfaceStrong : 'transparent' }]}
+                  onPress={() => {
+                    setRenderedPlayheadMode((mode) => {
+                      const idx = RENDERED_PLAYHEAD_MODES.indexOf(mode);
+                      return RENDERED_PLAYHEAD_MODES[(idx + 1) % RENDERED_PLAYHEAD_MODES.length];
+                    });
+                  }}
+                >
+                  <Feather name={renderedPlayheadMode === 'line' ? 'minus' : renderedPlayheadMode === 'both' ? 'crosshair' : 'disc'} size={14} color={theme.inkMuted} />
+                  <Text style={[styles.overflowActionText, { color: theme.ink }]}>Playhead mode: {renderedPlayheadMode}</Text>
+                </Pressable>
+              )}
+
+              {scoreViewMode === 'rendered' && (
+                <Pressable
+                  style={({ pressed }) => [styles.overflowActionRow, { borderBottomColor: theme.border, backgroundColor: pressed ? theme.surfaceStrong : 'transparent' }]}
+                  onPress={() => {
+                    setRenderedLineColorIdx((idx) => (idx + 1) % RENDERED_LINE_COLORS.length);
+                  }}
+                >
+                  <View style={[styles.overflowColorSwatch, { backgroundColor: RENDERED_LINE_COLORS[renderedLineColorIdx] === 'none' ? 'transparent' : RENDERED_LINE_COLORS[renderedLineColorIdx], borderColor: theme.border }]} />
+                  <Text style={[styles.overflowActionText, { color: theme.ink }]}>Playhead line color</Text>
+                </Pressable>
+              )}
+
+              {scoreViewMode === 'rendered' && (
+                <Pressable
+                  style={({ pressed }) => [styles.overflowActionRow, { borderBottomColor: theme.border, backgroundColor: pressed ? theme.surfaceStrong : 'transparent' }]}
+                  onPress={() => {
+                    setRenderedNoteColorIdx((idx) => (idx + 1) % RENDERED_NOTE_COLORS.length);
+                  }}
+                >
+                  <View style={[styles.overflowColorSwatch, { backgroundColor: RENDERED_NOTE_COLORS[renderedNoteColorIdx], borderColor: theme.border }]} />
+                  <Text style={[styles.overflowActionText, { color: theme.ink }]}>Playhead note color</Text>
+                </Pressable>
+              )}
+
+              <Pressable
+                style={({ pressed }) => [styles.overflowActionRow, { borderBottomColor: theme.border, backgroundColor: pressed ? theme.surfaceStrong : 'transparent' }]}
+                onPress={() => {
+                  changeClefFilter('upper');
+                  setShowOverflowMenu(false);
+                }}
+              >
+                <Feather name="arrow-up" size={14} color={theme.inkMuted} />
+                <Text style={[styles.overflowActionText, { color: theme.ink }]}>Upper clef only</Text>
+              </Pressable>
+
+              <Pressable
+                style={({ pressed }) => [styles.overflowActionRow, { borderBottomColor: theme.border, backgroundColor: pressed ? theme.surfaceStrong : 'transparent' }]}
+                onPress={() => {
+                  changeClefFilter('lower');
+                  setShowOverflowMenu(false);
+                }}
+              >
+                <Feather name="arrow-down" size={14} color={theme.inkMuted} />
+                <Text style={[styles.overflowActionText, { color: theme.ink }]}>Lower clef only</Text>
+              </Pressable>
+
+              <Pressable
+                style={({ pressed }) => [styles.overflowActionRow, { borderBottomColor: theme.border, backgroundColor: pressed ? theme.surfaceStrong : 'transparent' }]}
+                onPress={() => {
+                  setScoreViewMode((m) => (m === 'rendered' ? 'scan' : 'rendered'));
+                  setShowOverflowMenu(false);
+                }}
+              >
+                <Feather name={scoreViewMode === 'rendered' ? 'layout' : 'image'} size={14} color={theme.inkMuted} />
+                <Text style={[styles.overflowActionText, { color: theme.ink }]}>{scoreViewMode === 'rendered' ? 'Switch to scanned score' : 'Switch to rendered score'}</Text>
+              </Pressable>
+
+              <Pressable
+                style={({ pressed }) => [styles.overflowActionRow, { borderBottomColor: theme.border, backgroundColor: pressed ? theme.surfaceStrong : 'transparent' }]}
+                onPress={() => {
+                  setShowTimeline((v) => !v);
+                  setShowOverflowMenu(false);
+                }}
+              >
+                <Feather name={showTimeline ? 'eye-off' : 'eye'} size={14} color={theme.inkMuted} />
+                <Text style={[styles.overflowActionText, { color: theme.ink }]}>{showTimeline ? 'Hide timeline' : 'Show timeline'}</Text>
+              </Pressable>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Pitch pipe modal */}
+      <Modal
+        visible={showPitchPipeModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowPitchPipeModal(false)}
+      >
+        <View style={styles.audioControlsOverlay}>
+          <View style={[styles.pitchPipePanel, { backgroundColor: theme.surface, borderColor: theme.border }]}> 
+            <View style={[styles.audioControlsHeader, { borderBottomColor: theme.border }]}> 
+              <Text style={[styles.audioControlsTitle, { color: theme.ink }]}>Pitch Pipe</Text>
+              <TouchableOpacity onPress={() => setShowPitchPipeModal(false)} style={[styles.audioControlsCloseButton, { backgroundColor: theme.surfaceStrong, borderColor: theme.border }]}> 
+                <Feather name="x" size={20} color={theme.ink} />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={[styles.pitchPipeInfoText, { color: theme.inkMuted }]}>Use the pitch pipe to pitch the song from here.</Text>
+
+            <View style={styles.pitchPipeWheel}>
+              {pitchPipeWheelPoints.map((point) => {
+                const isActive = point.idx === pitchPipeIndex;
+                return (
+                  <Pressable
+                    key={point.note.label}
+                    style={[
+                      styles.pitchPipeNoteButton,
+                      {
+                        left: point.left - 19,
+                        top: point.top - 19,
+                        backgroundColor: isActive ? theme.accent : theme.surfaceStrong,
+                        borderColor: isActive ? theme.accent : theme.border,
+                      },
+                    ]}
+                    onPress={() => applyPitchPipeIndex(point.idx)}
+                  >
+                    <Text style={[styles.pitchPipeNoteLabel, { color: isActive ? '#FFF7EC' : theme.ink }]}>{point.note.label}</Text>
+                  </Pressable>
+                );
+              })}
+
+              <View style={[styles.pitchPipeCenter, { backgroundColor: theme.background, borderColor: theme.border }]}> 
+                <Text style={[styles.pitchPipeCenterNote, { color: theme.ink }]}>{selectedPitchPipe.label}</Text>
+                <Text style={[styles.pitchPipeCenterHz, { color: theme.inkMuted }]}>{selectedPitchPipe.hz} Hz</Text>
+              </View>
+            </View>
+
+            <View style={[styles.pitchPipeSliderWrap, { borderColor: theme.border, backgroundColor: theme.surfaceStrong }]}> 
+              <Text style={[styles.pitchPipeSliderLabel, { color: theme.inkMuted }]}>Rotate</Text>
+              <Slider
+                style={styles.pitchPipeSlider}
+                minimumValue={0}
+                maximumValue={PITCH_PIPE_NOTES.length - 1}
+                step={1}
+                value={pitchPipeIndex}
+                onValueChange={(v) => {
+                  applyPitchPipeIndex(Math.round(v));
+                }}
+                minimumTrackTintColor={theme.accent}
+                maximumTrackTintColor={theme.border}
+                thumbTintColor={theme.accent}
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {/* Instrument picker modal */}
       <Modal
@@ -2088,7 +2329,13 @@ const styles = StyleSheet.create({
     paddingBottom: 10,
     paddingTop: 8,
     backgroundColor: palette.background,
-    alignItems: 'flex-start',
+    alignItems: 'stretch',
+  },
+  topVoiceRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
   },
   topVoicePill: {
     flexDirection: 'row',
@@ -2108,6 +2355,15 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderWidth: 1,
     paddingHorizontal: 10,
+  },
+  topPitchPipeButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 0,
   },
   topVoiceDotActive: {
     backgroundColor: '#F3EBDE',
@@ -2175,31 +2431,6 @@ const styles = StyleSheet.create({
     width: '100%',
     height: 32,
   },
-  tempoPresets: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 4,
-  },
-  tempoPresetBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 12,
-    backgroundColor: barPalette.bar,
-    borderWidth: 1,
-    borderColor: barPalette.barBorder,
-  },
-  tempoPresetBtnActive: {
-    backgroundColor: barPalette.accent,
-    borderColor: barPalette.accent,
-  },
-  tempoPresetText: {
-    color: barPalette.barTextMuted,
-    fontSize: 10,
-    fontWeight: '700',
-  },
-  tempoPresetTextActive: {
-    color: barPalette.barText,
-  },
   seekBarWrap: {
     backgroundColor: barPalette.bar,
     paddingHorizontal: 14,
@@ -2208,11 +2439,23 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: barPalette.barBorder,
   },
+  seekBarWrapCollapsed: {
+    paddingTop: 7,
+    paddingBottom: 7,
+  },
   seekBarHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 2,
+  },
+  seekBarHeaderCollapsed: {
+    marginBottom: 0,
+  },
+  timelineHeaderRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   seekBarLabel: {
     color: barPalette.barTextMuted,
@@ -2239,17 +2482,17 @@ const styles = StyleSheet.create({
   barScroll: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 12,
     paddingHorizontal: 12,
   },
   playPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 8,
     backgroundColor: barPalette.barRaised,
-    borderRadius: 16,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
+    borderRadius: 18,
+    paddingVertical: 11,
+    paddingHorizontal: 16,
     borderWidth: 1,
     borderColor: barPalette.barBorder,
   },
@@ -2261,11 +2504,11 @@ const styles = StyleSheet.create({
   zoomPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 8,
     backgroundColor: barPalette.barRaised,
-    borderRadius: 16,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
+    borderRadius: 18,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
     borderWidth: 1,
     borderColor: barPalette.barBorder,
   },
@@ -2279,16 +2522,6 @@ const styles = StyleSheet.create({
   },
   scoreModeTextScan: {
     color: '#F2ECE0',
-  },
-  voicePill: {
-    flexDirection: 'row',
-    gap: 6,
-    backgroundColor: barPalette.barRaised,
-    borderRadius: 16,
-    paddingVertical: 6,
-    paddingHorizontal: 8,
-    borderWidth: 1,
-    borderColor: barPalette.barBorder,
   },
   voiceDot: {
     minWidth: 26,
@@ -2308,16 +2541,16 @@ const styles = StyleSheet.create({
   voiceDotTextInactive: { color: barPalette.barTextMuted },
   viewPill: {
     backgroundColor: barPalette.barRaised,
-    borderRadius: 16,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
+    borderRadius: 18,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
     borderWidth: 1,
     borderColor: barPalette.barBorder,
   },
   iconPill: {
-    width: 32,
-    height: 32,
-    borderRadius: 10,
+    width: 44,
+    height: 44,
+    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: barPalette.barRaised,
@@ -2358,6 +2591,108 @@ const styles = StyleSheet.create({
     color: palette.ink,
     letterSpacing: -0.3,
   },
+  overflowActionsList: {
+    paddingHorizontal: 12,
+    paddingTop: 6,
+  },
+  overflowActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    minHeight: 44,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 8,
+  },
+  overflowActionText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  overflowColorSwatch: {
+    width: 12,
+    height: 12,
+    borderRadius: 3,
+    borderWidth: 1,
+  },
+  pitchPipePanel: {
+    width: '100%',
+    maxWidth: 560,
+    borderRadius: 24,
+    paddingTop: 18,
+    paddingBottom: 18,
+    paddingHorizontal: 16,
+    borderWidth: 1,
+    shadowColor: '#000',
+    shadowOpacity: 0.25,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 10,
+  },
+  pitchPipeWheel: {
+    alignSelf: 'center',
+    width: 280,
+    height: 280,
+    marginTop: 4,
+    marginBottom: 10,
+  },
+  pitchPipeNoteButton: {
+    position: 'absolute',
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pitchPipeNoteLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  pitchPipeCenter: {
+    position: 'absolute',
+    left: 88,
+    top: 88,
+    width: 104,
+    height: 104,
+    borderRadius: 52,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pitchPipeCenterNote: {
+    fontSize: 22,
+    fontWeight: '900',
+    letterSpacing: -0.2,
+  },
+  pitchPipeCenterHz: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  pitchPipeInfoText: {
+    fontSize: 13,
+    fontWeight: '600',
+    marginTop: 8,
+    marginBottom: 4,
+    paddingHorizontal: 8,
+  },
+  pitchPipeSliderWrap: {
+    marginTop: 10,
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 4,
+  },
+  pitchPipeSliderLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    marginBottom: 2,
+  },
+  pitchPipeSlider: {
+    width: '100%',
+    height: 30,
+  },
   instrumentRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2379,5 +2714,90 @@ const styles = StyleSheet.create({
   instrumentNameActive: {
     color: barPalette.accent,
     fontWeight: '800',
+  },
+  audioControlsOverlay: {
+    flex: 1,
+    backgroundColor: 'transparent',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+  },
+  audioControlsPanel: {
+    width: '100%',
+    maxWidth: 560,
+    backgroundColor: '#F9F3E8',
+    borderRadius: 28,
+    paddingTop: 20,
+    paddingBottom: 20,
+    paddingHorizontal: 20,
+    borderWidth: 1,
+    borderColor: '#D6CDBD',
+    shadowColor: '#000',
+    shadowOpacity: 0.3,
+    shadowRadius: 22,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 12,
+    maxHeight: '80%',
+  },
+  audioControlsHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E6DCCD',
+  },
+  audioControlsTitle: {
+    fontSize: 19,
+    fontWeight: '800',
+    color: '#2A261F',
+    letterSpacing: -0.2,
+  },
+  audioControlsCloseButton: {
+    width: 36,
+    height: 36,
+    backgroundColor: '#EFE5D6',
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#DACFBF',
+  },
+  audioControlsScroll: {
+    flex: 0,
+  },
+  audioControlBlock: {
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    backgroundColor: '#F6EEDE',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#DCCFBB',
+    borderLeftWidth: 4,
+    borderLeftColor: barPalette.accent,
+    marginBottom: 12,
+  },
+  audioControlRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  audioControlLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#6A6154',
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+  },
+  audioControlValue: {
+    fontSize: 17,
+    fontWeight: '800',
+    color: '#2D2922',
+  },
+  audioSlider: {
+    width: '100%',
+    height: 32,
   },
 });

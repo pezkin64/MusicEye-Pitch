@@ -13,14 +13,24 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { FileHandlerService } from '../services/FileHandlerService';
+import { getStatusBarStyleForTheme } from '../theme/themes';
 
 /**
  * FileUploadScreen — allows users to pick sheet music image files from device storage
  * and scan them through the OMR engine.
  */
-export const FileUploadScreen = ({ onNavigateBack, onFileSelected }) => {
+export const FileUploadScreen = ({ onNavigateBack, onFileSelected, theme: incomingTheme }) => {
   const [isLoading, setIsLoading] = useState(false);
   const insets = useSafeAreaInsets();
+  const theme = incomingTheme || {
+    background: '#F9F7F1',
+    surface: '#FBFAF5',
+    surfaceStrong: '#F1EEE4',
+    border: '#D6D0C4',
+    ink: '#3E3C37',
+    inkMuted: '#6E675E',
+    accent: '#E05A2A',
+  };
 
   const pickImageFile = async () => {
     try {
@@ -83,8 +93,8 @@ export const FileUploadScreen = ({ onNavigateBack, onFileSelected }) => {
   };
 
   return (
-    <View style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="#F9F7F1" />
+    <View style={[styles.container, { backgroundColor: theme.background }]}>
+      <StatusBar barStyle={getStatusBarStyleForTheme({ colors: theme })} backgroundColor={theme.background} />
 
       <View
         style={[
@@ -97,9 +107,9 @@ export const FileUploadScreen = ({ onNavigateBack, onFileSelected }) => {
         ]}
       >
         <TouchableOpacity style={styles.backButton} onPress={onNavigateBack}>
-          <Feather name="arrow-left" size={24} color="#3E3C37" />
+          <Feather name="arrow-left" size={24} color={theme.ink} />
         </TouchableOpacity>
-        <Text style={styles.title}>Scan from Files</Text>
+        <Text style={[styles.title, { color: theme.ink }]}>Scan from Files</Text>
         <View style={{ width: 40 }} />
       </View>
 
@@ -111,11 +121,11 @@ export const FileUploadScreen = ({ onNavigateBack, onFileSelected }) => {
         contentContainerStyle={{ flexGrow: 1, justifyContent: 'center' }}
       >
         <View style={styles.illustrationContainer}>
-          <Feather name="image" size={64} color="#9B967B" style={{ marginBottom: 16 }} />
-          <Text style={styles.instructionTitle}>Pick Sheet Music Image</Text>
+          <Feather name="image" size={64} color={theme.inkMuted} style={{ marginBottom: 16 }} />
+          <Text style={[styles.instructionTitle, { color: theme.ink }]}>Pick Sheet Music Image</Text>
         </View>
 
-        <View style={styles.infoBox}>
+        <View style={[styles.infoBox, { backgroundColor: theme.surface, borderColor: theme.border }]}>
           <Text style={styles.infoLabel}>Supported Formats:</Text>
           <Text style={styles.infoText}>PNG, JPEG (ready to scan)</Text>
           <Text style={styles.infoText}>PDF (convert pages to images first)</Text>
@@ -128,7 +138,7 @@ export const FileUploadScreen = ({ onNavigateBack, onFileSelected }) => {
 
           <Text style={styles.infoLabel}>Using PDF Files:</Text>
           <TouchableOpacity onPress={showPDFInstructions}>
-            <Text style={styles.infoLink}>Tap here to learn how to convert PDFs</Text>
+            <Text style={[styles.infoLink, { color: theme.accent }]}>Tap here to learn how to convert PDFs</Text>
           </TouchableOpacity>
         </View>
       </ScrollView>
@@ -143,13 +153,13 @@ export const FileUploadScreen = ({ onNavigateBack, onFileSelected }) => {
           },
         ]}
       >
-        <TouchableOpacity style={styles.browseButton} onPress={pickImageFile} disabled={isLoading}>
+        <TouchableOpacity style={[styles.browseButton, { backgroundColor: theme.ink }]} onPress={pickImageFile} disabled={isLoading}>
           {isLoading ? (
-            <ActivityIndicator size="small" color="#FBFAF5" />
+            <ActivityIndicator size="small" color={theme.surface} />
           ) : (
             <>
-              <Feather name="folder" size={20} color="#FBFAF5" style={{ marginRight: 8 }} />
-              <Text style={styles.browseButtonText}>Browse Images</Text>
+              <Feather name="folder" size={20} color={theme.surface} style={{ marginRight: 8 }} />
+              <Text style={[styles.browseButtonText, { color: theme.surface }]}>Browse Images</Text>
             </>
           )}
         </TouchableOpacity>

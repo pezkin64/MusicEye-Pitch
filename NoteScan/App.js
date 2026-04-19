@@ -1,14 +1,16 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { StatusBar, View, Text, TouchableOpacity, Alert } from 'react-native';
+import { StatusBar, View, Text, TouchableOpacity, Alert, ScrollView } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
 import { HomeScreen } from './src/screens/HomeScreen';
 import { PlaybackScreen } from './src/screens/PlaybackScreen';
 import { SettingsScreen } from './src/screens/SettingsScreen';
-import { FileUploadScreen } from './src/screens/FileUploadScreen';
 import { LibraryScreen } from './src/screens/LibraryScreen';
 import { OMRSettings } from './src/services/OMRSettings';
 import { LibraryService } from './src/services/LibraryService';
+import { ThemeSettings } from './src/services/ThemeSettings';
+import { getThemeById, getStatusBarStyleForTheme } from './src/theme/themes';
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState('home');
@@ -16,12 +18,21 @@ export default function App() {
   const [playbackScoreData, setPlaybackScoreData] = useState(null);
   const [playbackScoreEntry, setPlaybackScoreEntry] = useState(null);
   const [homeGoForward, setHomeGoForward] = useState(null);
+  const [themeId, setThemeId] = useState(ThemeSettings.getThemeId());
   const goForwardTimerRef = useRef(null);
+
+  const activeTheme = getThemeById(themeId);
+  const theme = activeTheme.colors;
 
   // Load saved OMR engine preference on startup
   useEffect(() => {
     OMRSettings.load();
     LibraryService.load();
+    ThemeSettings.load().then((loadedTheme) => {
+      if (loadedTheme?.id) {
+        setThemeId(loadedTheme.id);
+      }
+    });
 
     return () => {
       if (goForwardTimerRef.current) {
@@ -136,6 +147,41 @@ export default function App() {
     setCurrentScreen('playback');
   };
 
+  const pickImageFromFiles = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ['image/png', 'image/jpeg', 'image/jpg'],
+        copyToCacheDirectory: true,
+        multiple: false,
+      });
+
+      if (result.canceled || !result.assets || result.assets.length === 0) {
+        return;
+      }
+
+      const asset = result.assets[0];
+      const mime = String(asset.mimeType || '').toLowerCase();
+      const name = String(asset.name || '').toLowerCase();
+      const isSupportedImage =
+        mime === 'image/png' ||
+        mime === 'image/jpeg' ||
+        mime === 'image/jpg' ||
+        name.endsWith('.png') ||
+        name.endsWith('.jpg') ||
+        name.endsWith('.jpeg');
+
+      if (!isSupportedImage) {
+        Alert.alert('Unsupported File Type', 'Please select a PNG or JPEG image.');
+        return;
+      }
+
+      handleFileSelected(asset.uri);
+    } catch (err) {
+      console.error('Error picking file:', err?.message || err);
+      Alert.alert('Error', 'Failed to pick file. Please try again.');
+    }
+  };
+
   const handleScoreTapFromLibrary = (scoreData, entry) => {
     clearGoForward();
     setPlaybackImageUri(null);
@@ -159,17 +205,24 @@ export default function App() {
     }
   };
 
+  const handleThemeChange = async (nextThemeId) => {
+    const next = await ThemeSettings.setThemeId(nextThemeId);
+    setThemeId(next.id);
+  };
+
   return (
     <SafeAreaProvider>
-      <View style={{ flex: 1 }}>
-        <StatusBar barStyle="dark-content" backgroundColor="#F9F7F1" />
+      <View style={{ flex: 1, backgroundColor: theme.background }}>
+        <StatusBar barStyle={getStatusBarStyleForTheme(activeTheme)} backgroundColor={theme.background} />
         {currentScreen === 'home' ? (
           <HomeScreen
             onNavigate={setCurrentScreen}
             onPickFromGallery={pickImageFromGallery}
             onPickFromCamera={pickImageFromCamera}
+            onPickFromFiles={pickImageFromFiles}
             goForwardState={homeGoForward}
             onGoForward={handleGoForward}
+            theme={theme}
           />
         ) : currentScreen === 'playback' ? (
           <PlaybackScreen
@@ -178,35 +231,75 @@ export default function App() {
             scoreEntry={playbackScoreEntry}
             onNavigateBack={handlePlaybackBack}
             onScoredSaved={handlePlaybackComplete}
+            theme={theme}
           />
         ) : currentScreen === 'settings' ? (
           <SettingsScreen
             onNavigateBack={() => setCurrentScreen('home')}
-          />
-        ) : currentScreen === 'upload-file' ? (
-          <FileUploadScreen
-            onNavigateBack={() => setCurrentScreen('home')}
-            onFileSelected={handleFileSelected}
+            theme={theme}
+            themeId={themeId}
+            onThemeChange={handleThemeChange}
           />
         ) : currentScreen === 'help' ? (
-          <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F9F7F1' }}>
-            <Text style={{ fontSize: 18, color: '#3E3C37', marginBottom: 20 }}>❓ Help</Text>
-            <Text style={{ fontSize: 14, color: '#6E675E', marginBottom: 20, paddingHorizontal: 24, textAlign: 'center' }}>
-              Music Eye uses OMR (Optical Music Recognition) to scan
-              sheet music images and convert them to playable notes.{'\n\n'}
-              1. Take a photo or pick an image of sheet music{'\n'}
-              2. The image is sent to the ZemEmu engine{"\n"}
-              3. Returned MusicXML is converted to playable audio{"\n\n"}
-              In Settings, select ZemEmu and run ZemskyHarness in the same Android emulator.
-            </Text>
-            <TouchableOpacity onPress={() => setCurrentScreen('home')}>
-              <Text style={{ color: '#6E675E', fontSize: 16, fontWeight: '600' }}>← Back to Home</Text>
-            </TouchableOpacity>
+          <View style={{ flex: 1, backgroundColor: theme.background }}>
+            <ScrollView
+              contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 44, paddingBottom: 28 }}
+              showsVerticalScrollIndicator={false}
+            >
+              <Text style={{ fontSize: 24, color: theme.ink, fontWeight: '800', marginBottom: 8 }}>Help</Text>
+              <Text style={{ fontSize: 14, color: theme.inkMuted, lineHeight: 21, marginBottom: 18 }}>
+                Follow these steps to scan sheet music clearly and quickly.
+              </Text>
+
+              <Text style={{ fontSize: 18, color: theme.ink, fontWeight: '700', marginBottom: 8 }}>
+                1. Scan from Camera
+              </Text>
+              <Text style={{ fontSize: 14, color: theme.inkMuted, lineHeight: 21, marginBottom: 16 }}>
+                • Tap Scan from Camera on Home.{"\n"}
+                • Hold phone directly above one page and fill the frame.{"\n"}
+                • Use good lighting and avoid shadows or glare.{"\n"}
+                • Keep the page flat and straight before capturing.
+              </Text>
+
+              <Text style={{ fontSize: 18, color: theme.ink, fontWeight: '700', marginBottom: 8 }}>
+                2. Scan from Photos
+              </Text>
+              <Text style={{ fontSize: 14, color: theme.inkMuted, lineHeight: 21, marginBottom: 16 }}>
+                • Tap Scan from Photos on Home.{"\n"}
+                • Choose a sharp image with the full page visible.{"\n"}
+                • Crop out background if needed so only music remains.{"\n"}
+                • Best results come from bright, high-resolution photos.
+              </Text>
+
+              <Text style={{ fontSize: 18, color: theme.ink, fontWeight: '700', marginBottom: 8 }}>
+                3. Scan from Files
+              </Text>
+              <Text style={{ fontSize: 14, color: theme.inkMuted, lineHeight: 21, marginBottom: 16 }}>
+                • Tap Scan from Files on Home.{"\n"}
+                • Select PNG or JPEG for direct scanning.{"\n"}
+                • If your file is PDF, convert each page to image first.{"\n"}
+                • Import one page at a time for the cleanest read.
+              </Text>
+
+              <Text style={{ fontSize: 18, color: theme.ink, fontWeight: '700', marginBottom: 8 }}>
+                Quick tips
+              </Text>
+              <Text style={{ fontSize: 14, color: theme.inkMuted, lineHeight: 21, marginBottom: 24 }}>
+                • Start with simple, clean scores when possible.{"\n"}
+                • Retry with a brighter or straighter image if notes are missed.{"\n"}
+                • Save good scans to build your library over time.
+              </Text>
+
+              <TouchableOpacity onPress={() => setCurrentScreen('home')}>
+                <Text style={{ color: theme.inkMuted, fontSize: 16, fontWeight: '600' }}>← Back to Home</Text>
+              </TouchableOpacity>
+            </ScrollView>
           </View>
         ) : currentScreen === 'library' ? (
           <LibraryScreen
             onNavigateBack={() => setCurrentScreen('home')}
             onScoreTap={handleScoreTapFromLibrary}
+            theme={theme}
           />
         ) : null}
       </View>

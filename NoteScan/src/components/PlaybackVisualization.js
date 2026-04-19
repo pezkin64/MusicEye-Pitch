@@ -45,6 +45,16 @@ const HIGHLIGHT_ATTACK_SEC = 0.06;
 const HIGHLIGHT_TAIL_SEC = 0.18;
 const ENABLE_SCAN_PLAYHEAD_VISUALS = false;
 
+function hexToRgba(hex, alpha) {
+  const value = String(hex || '').replace('#', '');
+  if (value.length !== 6) return `rgba(255,255,255,${alpha})`;
+  const r = parseInt(value.slice(0, 2), 16);
+  const g = parseInt(value.slice(2, 4), 16);
+  const b = parseInt(value.slice(4, 6), 16);
+  if ([r, g, b].some((v) => Number.isNaN(v))) return `rgba(255,255,255,${alpha})`;
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
 const DURATION_TO_BEATS = {
   whole: 4,
   half: 2,
@@ -118,6 +128,7 @@ export const PlaybackVisualization = ({
   voiceSelection,
   debugNotes,
   timelineMode = 'canonical',
+  theme,
 }) => {
   const scrollViewRef = useRef(null);
   const waveformScrollRef = useRef(null);
@@ -130,6 +141,15 @@ export const PlaybackVisualization = ({
   const [imageNaturalWidth, setImageNaturalWidth] = useState(0);
   const [imageNaturalHeight, setImageNaturalHeight] = useState(0);
   const prevSystemRef = useRef(-1);
+  const palette = {
+    background: theme?.background || '#F9F7F1',
+    surface: theme?.surface || '#FFFFFF',
+    surfaceStrong: theme?.surfaceStrong || '#F2F0EB',
+    border: theme?.border || '#E6E2D8',
+    ink: theme?.ink || '#3E3C37',
+    inkMuted: theme?.inkMuted || '#6E675E',
+    accent: theme?.accent || ACCENT,
+  };
 
   const secondsPerBeat = useMemo(() => (tempo > 0 ? 60 / tempo : 0), [tempo]);
 
@@ -339,22 +359,7 @@ export const PlaybackVisualization = ({
   const cursorX = cursorImageX * zoomScale;
   const clampedCursorX = Math.max(0, Math.min(cursorX, renderWidth - 3));
 
-  if (showCursor && (currentTime === 0 || activeIndex === 0 || activeIndex % 10 === 0)) {
-    console.log('🔴 CURSOR DEBUG:', {
-      currentTime,
-      activeIndex,
-      positions_length: positions.length,
-      activeRatio: activeRatio.toFixed(3),
-      systemIndex: activeSystemIndex,
-      sysR: { min: sysR.min.toFixed(0), max: sysR.max.toFixed(0), range: sysR.range.toFixed(0) },
-      cursorImageX: cursorImageX.toFixed(0),
-      zoomScale: zoomScale.toFixed(3),
-      cursorX: cursorX.toFixed(0),
-      renderWidth: renderWidth.toFixed(0),
-      clampedCursorX: clampedCursorX.toFixed(0),
-      imageNaturalWidth,
-    });
-  }
+  // Intentionally no per-frame cursor logging in production path.
 
   // Compact cursor marker (not a full-page bar)
   let cursorHeight = COMPACT_CURSOR_HEIGHT;
@@ -474,7 +479,7 @@ export const PlaybackVisualization = ({
 
   return (
     <View
-      style={styles.container}
+      style={[styles.container, { backgroundColor: palette.surface }]}
       onLayout={(e) => {
         setContainerWidth(e.nativeEvent.layout.width);
         setContainerHeight(e.nativeEvent.layout.height);
@@ -549,7 +554,7 @@ export const PlaybackVisualization = ({
           : [];
 
         return (
-          <View style={styles.waveformOuter}>
+          <View style={[styles.waveformOuter, { backgroundColor: palette.surface }]}> 
             <ScrollView
               ref={waveformScrollRef}
               horizontal
@@ -566,7 +571,7 @@ export const PlaybackVisualization = ({
                   onSeek(ratio * totalDuration);
                 }}
               >
-                <View style={[styles.waveformStrip, { width: stripW, height: WAVEFORM_HEIGHT }]}>
+                <View style={[styles.waveformStrip, { width: stripW, height: WAVEFORM_HEIGHT, backgroundColor: palette.surfaceStrong }]}> 
                   {/* Static note bars (memoized) */}
                   <WaveformBars
                     filtered={filtered}
@@ -586,7 +591,7 @@ export const PlaybackVisualization = ({
                         top: 0,
                         right: 0,
                         height: WAVEFORM_HEIGHT,
-                        backgroundColor: 'rgba(250, 250, 247, 0.6)',
+                        backgroundColor: hexToRgba(palette.surface, 0.68),
                       }}
                       pointerEvents="none"
                     />
@@ -621,7 +626,7 @@ export const PlaybackVisualization = ({
                             paddingHorizontal: 3,
                             paddingVertical: 1,
                             borderRadius: 4,
-                            backgroundColor: 'rgba(255,255,255,0.92)',
+                            backgroundColor: hexToRgba(palette.surface, 0.92),
                             alignItems: 'center',
                             shadowColor: '#000',
                             shadowOpacity: 0.08,
@@ -660,8 +665,8 @@ export const PlaybackVisualization = ({
       })()}
 
       {/* ─── Progress bar (scrubber) ─── */}
-      <Pressable onPress={handleProgressBarPress} style={styles.progressBarOuter}>
-        <View style={styles.progressBarTrack}>
+      <Pressable onPress={handleProgressBarPress} style={[styles.progressBarOuter, { backgroundColor: palette.surface, borderBottomColor: palette.border }]}>
+        <View style={[styles.progressBarTrack, { backgroundColor: palette.surfaceStrong }]}>
           {measureBeats && measureBeats.length > 1 && totalDuration > 0 && tempo > 0 && (
             measureBeats.slice(1).map((mb, i) => {
               const secPerBeat = 60 / tempo;
@@ -688,8 +693,8 @@ export const PlaybackVisualization = ({
       {/* ─── Vertically-scrolling sheet music with native pinch-to-zoom ─── */}
       <ScrollView
         ref={scrollViewRef}
-        style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
+        style={[styles.scrollView, { backgroundColor: palette.surface }]}
+        contentContainerStyle={[styles.scrollContent, { backgroundColor: palette.surface }]}
         showsVerticalScrollIndicator={false}
         showsHorizontalScrollIndicator={false}
         scrollEventThrottle={16}
@@ -751,7 +756,7 @@ export const PlaybackVisualization = ({
                           width: haloSize,
                           height: haloSize,
                           borderColor: color,
-                          backgroundColor: 'rgba(255,255,255,0.55)',
+                          backgroundColor: hexToRgba(palette.surface, 0.55),
                           opacity: 0.45 + intensity * 0.45,
                         },
                       ]}
@@ -795,7 +800,7 @@ export const PlaybackVisualization = ({
                         backgroundColor: color,
                         opacity: 0.85,
                         borderWidth: 1,
-                        borderColor: '#fff',
+                        borderColor: palette.surface,
                       }}
                       pointerEvents="none"
                     />
@@ -819,7 +824,7 @@ export const PlaybackVisualization = ({
                         paddingHorizontal: 2,
                         paddingVertical: 1,
                         borderRadius: 3,
-                        backgroundColor: 'rgba(255,255,255,0.9)',
+                        backgroundColor: hexToRgba(palette.surface, 0.9),
                         alignItems: 'center',
                       }}
                       pointerEvents="none"
@@ -832,8 +837,8 @@ export const PlaybackVisualization = ({
             </View>
           </Pressable>
         ) : (
-          <View style={styles.noImage}>
-            <Text style={styles.noImageText}>No sheet image</Text>
+          <View style={[styles.noImage, { backgroundColor: palette.surfaceStrong, borderColor: palette.border }]}>
+            <Text style={[styles.noImageText, { color: palette.inkMuted }]}>No sheet image</Text>
           </View>
         )}
       </ScrollView>
@@ -1008,6 +1013,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: '#f5f5f5',
+    borderWidth: 1,
     borderRadius: 8,
   },
   noImageText: {

@@ -21,6 +21,19 @@ const MAX_LIBRARY_ENTRIES = 50;
 class LibraryServiceClass {
   _index = null; // Array of { id, title, timestamp, engine, noteCount, composer, timeSignature }
 
+  _normalizeTimeSignature(value) {
+    if (!value) return '4/4';
+    if (typeof value === 'string') return value;
+    if (typeof value === 'object') {
+      const beats = Number(value.beats);
+      const beatType = Number(value.beatType);
+      if (Number.isFinite(beats) && Number.isFinite(beatType)) {
+        return `${beats}/${beatType}`;
+      }
+    }
+    return '4/4';
+  }
+
   /**
    * Initialize or load the library index from storage.
    */
@@ -47,7 +60,7 @@ class LibraryServiceClass {
       const noteCount = scoreData?.notes?.filter(n => n.type === 'note')?.length || 0;
       const composer = scoreData?.metadata?.composer || 'Unknown';
       const title = scoreData?.metadata?.workTitle || titleHint;
-      const timeSignature = scoreData?.metadata?.timeSignature || '4/4';
+      const timeSignature = this._normalizeTimeSignature(scoreData?.metadata?.timeSignature);
       const tempo = scoreData?.metadata?.tempo || 120;
 
       const id = `score_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;

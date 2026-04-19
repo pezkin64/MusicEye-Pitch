@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -22,69 +22,8 @@ import { WebView } from 'react-native-webview';
 import { ZemskyEmulatorService } from '../services/ZemskyEmulatorService';
 import { OMRSettings } from '../services/OMRSettings';
 import { OMRCacheService } from '../services/OMRCacheService';
-
-const animatedLogoHtml = `
-<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <style>
-      html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: transparent; overflow: hidden; }
-      .wrap { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
-      @keyframes blink { 0%,88%,100%{transform:scaleY(1)} 92%,96%{transform:scaleY(0.04)} }
-      @keyframes drift { 0%,25%{transform:translate(0,0)} 30%,55%{transform:translate(2px,-1px)} 60%,85%{transform:translate(-2px,1px)} 90%,100%{transform:translate(0,0)} }
-      .eye { animation: blink 6s ease-in-out infinite; transform-origin: 41px 41px; }
-      .pupil { animation: drift 8s cubic-bezier(.45,.05,.55,.95) infinite; transform-origin: 41px 41px; }
-    </style>
-  </head>
-  <body>
-    <div class="wrap">
-      <svg width="60" height="44" viewBox="0 0 82 82" xmlns="http://www.w3.org/2000/svg" style="overflow:visible;">
-        <defs><clipPath id="settingsLogoClip"><path d="M4,41 Q41,-8 78,41 Q41,90 4,41Z" /></clipPath></defs>
-        <g class="eye">
-          <path d="M4,41 Q41,-8 78,41 Q41,90 4,41Z" fill="#F1EEE4" stroke="#3E3C37" stroke-width="2.2"/>
-          <g clip-path="url(#settingsLogoClip)">
-            <circle cx="41" cy="41" r="22" fill="#E8DCC8"/>
-            <circle cx="41" cy="41" r="22" fill="none" stroke="#3E3C37" stroke-width="1"/>
-            <g class="pupil">
-              <circle cx="41" cy="41" r="13" fill="#3E3C37"/>
-              <text id="settingsLogoNoteGlyph" x="41" y="45" text-anchor="middle" dominant-baseline="middle" font-family="Georgia, serif" font-size="16" fill="#FFFFFF">&#9835;</text>
-              <circle cx="35" cy="34" r="2.5" fill="#FFFFFF" opacity="0.85"/>
-            </g>
-          </g>
-          <path d="M4,41 Q41,-8 78,41" fill="none" stroke="#3E3C37" stroke-width="2.2" stroke-linecap="round"/>
-          <path d="M4,41 Q41,90 78,41" fill="none" stroke="#3E3C37" stroke-width="1.1" stroke-linecap="round"/>
-        </g>
-      </svg>
-    </div>
-    <script>
-      (function () {
-        var note = document.getElementById('settingsLogoNoteGlyph');
-        if (!note) return;
-
-        var notes = ['\u2669', '\u266A', '\u266B', '\u266C'];
-        var idx = notes.indexOf(note.textContent);
-        if (idx < 0) idx = 1;
-
-        var blinkDurationMs = 6000;
-        // Blink is closed between 92% and 96%; 94% is fully closed.
-        var fullyClosedOffsetMs = Math.round(blinkDurationMs * 0.94);
-
-        function setNextNote() {
-          idx = (idx + 1) % notes.length;
-          note.textContent = notes[idx];
-        }
-
-        setTimeout(function () {
-          setNextNote();
-          setInterval(setNextNote, blinkDurationMs);
-        }, fullyClosedOffsetMs);
-      })();
-    </script>
-  </body>
-</html>
-`;
+import { LIGHT_THEME_OPTIONS, getStatusBarStyleForTheme } from '../theme/themes';
+import { buildThemedLogoHtml } from '../utils/logoTheme';
 
 const palette = {
   background: '#F9F7F1',
@@ -98,10 +37,12 @@ const palette = {
   danger: '#D9534F',
 };
 
-export const SettingsScreen = ({ onNavigateBack }) => {
+export const SettingsScreen = ({ onNavigateBack, theme, themeId, onThemeChange }) => {
   const [engine, setEngine] = useState(OMRSettings.getEngine());
   const [fullscreenImage, setFullscreenImage] = useState(null);
   const insets = useSafeAreaInsets();
+  const appTheme = { ...palette, ...(theme || {}) };
+  const animatedLogoHtml = useMemo(() => buildThemedLogoHtml(appTheme), [appTheme]);
 
   React.useEffect(() => {
     OMRSettings.load().then(() => {
@@ -138,10 +79,10 @@ export const SettingsScreen = ({ onNavigateBack }) => {
 
   return (
     <KeyboardAvoidingView
-      style={styles.container}
+      style={[styles.container, { backgroundColor: appTheme.background }]}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
-      <StatusBar barStyle="dark-content" backgroundColor={palette.background} />
+      <StatusBar barStyle={getStatusBarStyleForTheme({ colors: appTheme })} backgroundColor={appTheme.background} />
 
       <View
         style={[
@@ -150,14 +91,15 @@ export const SettingsScreen = ({ onNavigateBack }) => {
             paddingTop: insets.top + 16,
             paddingLeft: 24 + insets.left,
             paddingRight: 24 + insets.right,
+            backgroundColor: appTheme.background,
           },
         ]}
       >
         <TouchableOpacity onPress={onNavigateBack}>
-          <Text style={styles.linkText}>← Back</Text>
+          <Text style={[styles.linkText, { color: appTheme.inkMuted }]}>← Back</Text>
         </TouchableOpacity>
         <View style={styles.titleRow}>
-          <Text style={styles.title}>Settings</Text>
+          <Text style={[styles.title, { color: appTheme.ink }]}>Settings</Text>
           <View style={styles.logoWrap}>
             <WebView
               originWhitelist={["*"]}
@@ -183,7 +125,7 @@ export const SettingsScreen = ({ onNavigateBack }) => {
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Feather name="cpu" size={18} color={palette.ink} />
-            <Text style={styles.sectionTitle}>OMR Engine</Text>
+            <Text style={[styles.sectionTitle, { color: appTheme.ink }]}>OMR Engine</Text>
           </View>
 
           <View style={styles.engineRow}>
@@ -199,20 +141,53 @@ export const SettingsScreen = ({ onNavigateBack }) => {
                   Music eye
                 </Text>
               </View>
-              <Text style={styles.engineDesc}>
+              <Text style={[styles.engineDesc, { color: appTheme.inkMuted }]}>
                 Uses the separate Music eye app to run the native OMR stack.
               </Text>
-              <Text style={styles.engineVersion}>arm64 device • Native runtime</Text>
+              <Text style={[styles.engineVersion, { color: appTheme.inkMuted }]}>arm64 device • Native runtime</Text>
             </TouchableOpacity>
           </View>
         </View>
 
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
-            <Feather name="smartphone" size={18} color={palette.ink} />
-            <Text style={styles.sectionTitle}>Music eye helper</Text>
+            <Feather name="droplet" size={18} color={appTheme.ink} />
+            <Text style={[styles.sectionTitle, { color: appTheme.ink }]}>Theme Palette</Text>
           </View>
-          <Text style={styles.sectionDescription}>
+          <Text style={[styles.sectionDescription, { color: appTheme.inkMuted }]}> 
+            Pick a muted modern palette for the app, including dark and warm options.
+          </Text>
+          <View style={styles.themeGrid}>
+            {LIGHT_THEME_OPTIONS.map((opt) => {
+              const selected = opt.id === themeId;
+              return (
+                <TouchableOpacity
+                  key={opt.id}
+                  style={[
+                    styles.themeCard,
+                    { backgroundColor: opt.colors.surface, borderColor: selected ? opt.colors.accent : opt.colors.border },
+                    selected && styles.themeCardActive,
+                  ]}
+                  onPress={() => onThemeChange && onThemeChange(opt.id)}
+                >
+                  <View style={styles.themeSwatches}>
+                    <View style={[styles.themeSwatch, { backgroundColor: opt.colors.background }]} />
+                    <View style={[styles.themeSwatch, { backgroundColor: opt.colors.surfaceStrong }]} />
+                    <View style={[styles.themeSwatch, { backgroundColor: opt.colors.accent }]} />
+                  </View>
+                  <Text style={[styles.themeName, { color: opt.colors.ink }]}>{opt.name}</Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </View>
+
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Feather name="smartphone" size={18} color={palette.ink} />
+            <Text style={[styles.sectionTitle, { color: appTheme.ink }]}>Music eye helper</Text>
+          </View>
+          <Text style={[styles.sectionDescription, { color: appTheme.inkMuted }]}>
             Default endpoint: {ZemskyEmulatorService.getServerUrl()}. Run the Music eye helper app on the same phone, then select Music eye here before scanning.
           </Text>
         </View>
@@ -221,9 +196,9 @@ export const SettingsScreen = ({ onNavigateBack }) => {
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Feather name="trash-2" size={18} color={palette.ink} />
-            <Text style={styles.sectionTitle}>Cache Management</Text>
+            <Text style={[styles.sectionTitle, { color: appTheme.ink }]}>Cache Management</Text>
           </View>
-          <Text style={styles.sectionDescription}>
+          <Text style={[styles.sectionDescription, { color: appTheme.inkMuted }]}>
             OMR results are cached to avoid reprocessing. After parser updates, clear the cache to use new fixes.
           </Text>
           <TouchableOpacity style={[styles.button, styles.dangerButton]} onPress={handleClearCache}>
@@ -348,6 +323,35 @@ const styles = StyleSheet.create({
     color: palette.inkMuted,
     lineHeight: 18,
     marginBottom: 12,
+  },
+  themeGrid: {
+    marginTop: 6,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  themeCard: {
+    width: '48%',
+    borderRadius: 12,
+    borderWidth: 1,
+    padding: 10,
+  },
+  themeCardActive: {
+    borderWidth: 2,
+  },
+  themeSwatches: {
+    flexDirection: 'row',
+    gap: 6,
+    marginBottom: 8,
+  },
+  themeSwatch: {
+    flex: 1,
+    height: 18,
+    borderRadius: 6,
+  },
+  themeName: {
+    fontSize: 13,
+    fontWeight: '700',
   },
   label: {
     fontSize: 12,

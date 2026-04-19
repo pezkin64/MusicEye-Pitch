@@ -6,7 +6,9 @@ import { SoundFontService } from './SoundFontService';
 // Gracefully degrade when running in Expo Go.
 let AudioContext = null;
 try {
-  AudioContext = require('react-native-audio-api').AudioContext;
+  // Use eval(require) so Metro does not hard-require this optional dependency.
+  const optionalRequire = eval('require');
+  AudioContext = optionalRequire('react-native-audio-api').AudioContext;
 } catch (_) {
   console.warn('[AudioPlaybackService] react-native-audio-api not available – Web Audio disabled, using expo-av fallback');
 }
@@ -54,19 +56,56 @@ export class AudioPlaybackService {
   static _beatMarkers = null;      // [{ beatOffset, accent }]
   static _beatMarkersOnset = null; // [{ beatOffset, accent }]
   static _beatMarkersOnsetExternal = null; // [{ beatOffset, accent }]
-  static _beatOnlyMode = false;
   static _playbackLeadSec = 0;
+  static _pitchPreviewSource = null;
+  static _pitchPreviewLastAt = 0;
+  static _pitchPreviewSound = null;
+  static _pitchPreviewUriCache = new Map();
+  static _pitchPipeViolaPresetIndex = undefined;
 
   static setBeatOnlyMode(enabled) {
-    this._beatOnlyMode = !!enabled;
+    // Legacy no-op: beat-only test mode was removed.
+    // Keep the method so older UI code can call it safely.
+    return !!enabled;
   }
 
   static setPitchHz(hz) {
     const nextHz = Number.isFinite(hz) && hz > 0 ? hz : 440;
+    if (Math.abs(nextHz - this._pitchHz) < 0.001) {
+      return;
+    }
     this._pitchHz = nextHz;
     this._pitchCents = (Math.log(nextHz / 440.0) * 1200.0) / Math.log(2.0);
+
+    const shouldReseedQueue = this._useWebAudio && this.isPlaying && !!this._queueNode;
+    let currentElapsed = 0;
+    if (shouldReseedQueue) {
+      const ctx = this._getAudioContext();
+      if (ctx) {
+        currentElapsed = Math.max(0, ctx.currentTime - this._playStartTime + this._playStartOffset);
+      }
+    }
+
     this._noteWaveformCache.clear();
     this._audioBufferCache.clear();
+
+    // Rebuild immediately only during active queue playback.
+    // When idle, keep updates lightweight and lazily regenerate on next prepare/play.
+    if (shouldReseedQueue && this._noteEvents && this._noteEvents.length > 0) {
+      this._precacheWaveforms();
+    }
+
+    // Refresh queued audio from the current timeline position so pitch changes apply mid-play.
+    if (shouldReseedQueue) {
+      this._queueNode.clearBuffers();
+      this._mixCursor = Math.floor(currentElapsed * 44100);
+      const ctx = this._getAudioContext();
+      if (ctx) {
+        this._playStartTime = ctx.currentTime;
+      }
+      this._playStartOffset = currentElapsed;
+      this._feedChunks();
+    }
   }
 
   static getPreparedNoteEvents() {
@@ -229,27 +268,9 @@ export class AudioPlaybackService {
   }
 
   static _mixBeatGuide(buffer, startSample = 0, sampleRate = 44100, tempo = 120) {
-    const onsetMarkers = this._beatMarkersOnsetExternal || this._beatMarkersOnset;
-    const markers = this._beatOnlyMode
-      ? (onsetMarkers || this._beatMarkers)
-      : this._beatMarkers;
-    if (!buffer || !markers || markers.length === 0) return;
-    const secondsPerBeat = 60 / tempo;
-    const totalSamples = buffer.length || 0;
-    const beatOnlyBoost = this._beatOnlyMode ? 1.45 : 1;
-
-    for (const marker of markers) {
-      const markerSample = Math.floor(marker.beatOffset * secondsPerBeat * sampleRate);
-      const localStart = markerSample - startSample;
-      if (localStart >= totalSamples) continue;
-
-      const click = this._generateBeatClick(sampleRate, marker.accent);
-      for (let i = 0; i < click.length; i++) {
-        const idx = localStart + i;
-        if (idx < 0 || idx >= totalSamples) continue;
-        buffer[idx] += click[i] * beatOnlyBoost;
-      }
-    }
+    // Beat click track disabled.
+    // Keep method for compatibility with existing call sites.
+    return;
   }
 
   /* ─── Waveform generation ─── */
@@ -390,6 +411,205 @@ export class AudioPlaybackService {
     return 0.035;
   }
 
+  static _resolveViolaPresetIndex() {
+    if (this._pitchPipeViolaPresetIndex !== undefined) {
+      return this._pitchPipeViolaPresetIndex;
+    }
+    if (!this._soundFontReady) {
+      this._pitchPipeViolaPresetIndex = null;
+      return null;
+    }
+    const presets = SoundFontService.getAvailablePresets();
+    const exact = presets.find((p) => /\bviola\b/i.test(String(p?.name || '')));
+    this._pitchPipeViolaPresetIndex = exact ? exact.index : null;
+    return this._pitchPipeViolaPresetIndex;
+  }
+
+  static _renderPitchPipeSoundFontTone(freq, durationSec, gain = 0.2) {
+    if (!this._soundFontReady) return null;
+    const violaIdx = this._resolveViolaPresetIndex();
+    if (!Number.isFinite(violaIdx)) return null;
+
+    const activePresetIndex = SoundFontService.getActivePresetIndex();
+    try {
+      if (activePresetIndex !== violaIdx) {
+        SoundFontService.selectPreset(violaIdx);
+      }
+
+      const midiFloat = 69 + 12 * Math.log2(freq / 440);
+      const midiNote = Math.round(midiFloat);
+      const tuningCents = (midiFloat - midiNote) * 100;
+      const rendered = SoundFontService.renderNote(midiNote, durationSec, 112, tuningCents);
+      if (!rendered || rendered.length === 0) return null;
+
+      // Stronger gain for better audibility on phone speakers.
+      const out = new Float32Array(rendered.length);
+      const scale = Math.max(0.08, Math.min(1, gain)) * 1.28;
+      for (let i = 0; i < rendered.length; i++) {
+        const boosted = rendered[i] * scale;
+        out[i] = Math.max(-0.98, Math.min(0.98, boosted));
+      }
+      return out;
+    } catch (_) {
+      return null;
+    } finally {
+      if (activePresetIndex !== violaIdx) {
+        try { SoundFontService.selectPreset(activePresetIndex); } catch (_) { /* ignore */ }
+      }
+    }
+  }
+
+  /**
+   * Generate a reed-like pitch-pipe waveform (warmer than a plain sine beep).
+   */
+  static _generatePitchPipeTone(freq, sampleRate, durationSec, gain = 0.2) {
+    const sampleCount = Math.max(1, Math.floor(sampleRate * durationSec));
+    const attackSamples = Math.max(1, Math.floor(sampleRate * 0.01));
+    const releaseSamples = Math.max(1, Math.floor(sampleRate * 0.03));
+    const releaseStart = Math.max(0, sampleCount - releaseSamples);
+    const out = new Float32Array(sampleCount);
+
+    for (let i = 0; i < sampleCount; i++) {
+      const t = i / sampleRate;
+
+      // Small vibrato adds realism without sounding unstable.
+      const vibratoHz = 5.4;
+      const vibratoDepth = 0.0045;
+      const f = freq * (1 + vibratoDepth * Math.sin(2 * Math.PI * vibratoHz * t));
+
+      // Reed-like harmonic blend.
+      const fundamental = Math.sin(2 * Math.PI * f * t);
+      const h2 = 0.42 * Math.sin(2 * Math.PI * f * 2 * t + 0.16);
+      const h3 = 0.24 * Math.sin(2 * Math.PI * f * 3 * t + 0.31);
+      const h4 = 0.11 * Math.sin(2 * Math.PI * f * 4 * t + 0.48);
+
+      // Very low breath noise so it does not feel synthetic.
+      const noise = (Math.random() * 2 - 1) * 0.015;
+
+      let env = 1;
+      if (i < attackSamples) {
+        env = i / attackSamples;
+      } else if (i >= releaseStart) {
+        env = (sampleCount - i) / releaseSamples;
+      }
+
+      out[i] = (fundamental + h2 + h3 + h4 + noise) * env * gain * 1.05;
+    }
+
+    return out;
+  }
+
+  /**
+   * Play a short low-latency reference tone for pitch-pipe style UX.
+   * Uses Web Audio directly and can retrigger quickly while sliding.
+   */
+  static playPitchPreviewHz(hz, options = {}) {
+    const freq = Number.isFinite(hz) && hz > 0 ? hz : 440;
+    const durationMs = Number.isFinite(options.durationMs) ? options.durationMs : 520;
+    const retriggerMs = Number.isFinite(options.retriggerMs) ? options.retriggerMs : 28;
+    const gain = Number.isFinite(options.gain) ? options.gain : 0.6;
+
+    const ctx = this._getAudioContext();
+    if (!ctx) {
+      this._playPitchPreviewExpoFallback(freq, options);
+      return true;
+    }
+    if (ctx.state === 'suspended') {
+      try { ctx.resume(); } catch (_) { return false; }
+    }
+
+    const nowMs = Date.now();
+    if (nowMs - this._pitchPreviewLastAt < retriggerMs) {
+      return false;
+    }
+    this._pitchPreviewLastAt = nowMs;
+
+    const sampleRate = 44100;
+    const durationSec = Math.max(0.06, durationMs / 1000);
+    const tone = this._renderPitchPipeSoundFontTone(freq, durationSec, gain)
+      || this._generatePitchPipeTone(freq, sampleRate, durationSec, gain);
+    const sampleCount = tone.length;
+
+    const buffer = ctx.createBuffer(1, sampleCount, sampleRate);
+    const ch = buffer.getChannelData(0);
+    ch.set(tone);
+
+    try {
+      if (this._pitchPreviewSource) {
+        try { this._pitchPreviewSource.stop(); } catch (_) {}
+      }
+      const src = ctx.createBufferSource();
+      src.buffer = buffer;
+      src.connect(ctx.destination);
+      src.start(0);
+      this._pitchPreviewSource = src;
+      src.onended = () => {
+        if (this._pitchPreviewSource === src) {
+          this._pitchPreviewSource = null;
+        }
+      };
+      return true;
+    } catch (_) {
+      this._playPitchPreviewExpoFallback(freq, options);
+      return false;
+    }
+  }
+
+  static async _playPitchPreviewExpoFallback(hz, options = {}) {
+    try {
+      await Audio.setAudioModeAsync({
+        playsInSilentModeIOS: true,
+        staysActiveInBackground: true,
+        shouldDuckAndroid: false,
+      });
+
+      const freq = Number.isFinite(hz) && hz > 0 ? hz : 440;
+      const durationMs = Number.isFinite(options.durationMs) ? options.durationMs : 520;
+      const gain = Number.isFinite(options.gain) ? options.gain : 0.6;
+      const key = `${Math.round(freq)}_${Math.round(durationMs)}_${Math.round(gain * 100)}`;
+
+      let uri = this._pitchPreviewUriCache.get(key);
+      if (!uri) {
+        const sampleRate = 44100;
+        const durationSec = Math.max(0.06, durationMs / 1000);
+        const audioData = this._renderPitchPipeSoundFontTone(freq, durationSec, gain)
+          || this._generatePitchPipeTone(freq, sampleRate, durationSec, 0.7);
+
+        uri = await this.writeWavToFile(audioData);
+        this._pitchPreviewUriCache.set(key, uri);
+      }
+
+      if (this._pitchPreviewSound) {
+        try {
+          await this._pitchPreviewSound.stopAsync();
+          await this._pitchPreviewSound.unloadAsync();
+        } catch (_) { /* ignore */ }
+        this._pitchPreviewSound = null;
+      }
+
+      const { sound } = await Audio.Sound.createAsync(
+        { uri },
+        {
+          shouldPlay: true,
+          volume: 1,
+          progressUpdateIntervalMillis: 16,
+        }
+      );
+      this._pitchPreviewSound = sound;
+      sound.setOnPlaybackStatusUpdate((status) => {
+        if (!status?.isLoaded) return;
+        if (status.didJustFinish) {
+          sound.unloadAsync().catch(() => {});
+          if (this._pitchPreviewSound === sound) {
+            this._pitchPreviewSound = null;
+          }
+        }
+      });
+    } catch (e) {
+      console.warn('[AudioPlaybackService] Pitch preview fallback failed:', e?.message || e);
+    }
+  }
+
   /**
    * Pre-generate Float32Array waveforms for all unique (midiNote, velocity) combos.
    * Renders each at the longest needed duration (slowest tempo = 40 BPM)
@@ -424,6 +644,14 @@ export class AudioPlaybackService {
    */
   static prepareNoteEvents(notes, options = {}) {
     const measureBeats = Array.isArray(options.measureBeats) ? options.measureBeats : [];
+    const transposeSemitones = Number.isFinite(options.transposeSemitones)
+      ? Math.round(options.transposeSemitones)
+      : 0;
+    const applyTranspose = (midiNote) => {
+      if (!Number.isFinite(midiNote)) return midiNote;
+      const transposed = Math.round(midiNote + transposeSemitones);
+      return Math.max(0, Math.min(127, transposed));
+    };
     const getBeats = (n) => n.tiedBeats || n.durationBeats || ({
       whole: 4, half: 2, quarter: 1, eighth: 0.5, sixteenth: 0.25,
       '32nd': 0.125, dotted_whole: 6, dotted_half: 3, dotted_quarter: 1.5,
@@ -757,30 +985,28 @@ export class AudioPlaybackService {
     const t0 = startSample / sampleRate;
     const t1 = (startSample + chunkSize) / sampleRate;
 
-    if (!this._beatOnlyMode) {
-      for (const evt of this._noteEvents) {
-        if (this._voiceSelection && !this._voiceSelection[evt.voice]) continue;
+    for (const evt of this._noteEvents) {
+      if (this._voiceSelection && !this._voiceSelection[evt.voice]) continue;
 
-        const noteStart = evt.beatOffset * spb;
-        const noteDur = evt.durationBeats * spb;
-        const noteEnd = noteStart + noteDur;
+      const noteStart = evt.beatOffset * spb;
+      const noteDur = evt.durationBeats * spb;
+      const noteEnd = noteStart + noteDur;
 
-        if (noteEnd <= t0 || noteStart >= t1) continue;
+      if (noteEnd <= t0 || noteStart >= t1) continue;
 
-        const cacheKey = `${evt.midiNote}_${evt.velocity}`;
-        const waveform = this._noteWaveformCache.get(cacheKey);
-        if (!waveform) continue;
+      const cacheKey = `${evt.midiNote}_${evt.velocity}`;
+      const waveform = this._noteWaveformCache.get(cacheKey);
+      if (!waveform) continue;
 
-        const noteStartSample = Math.round(noteStart * sampleRate);
-        const chunkStart = Math.max(0, noteStartSample - startSample);
-        const waveOffset = Math.max(0, startSample - noteStartSample);
-        const waveEnd = Math.min(waveform.length, Math.round(noteDur * sampleRate));
+      const noteStartSample = Math.round(noteStart * sampleRate);
+      const chunkStart = Math.max(0, noteStartSample - startSample);
+      const waveOffset = Math.max(0, startSample - noteStartSample);
+      const waveEnd = Math.min(waveform.length, Math.round(noteDur * sampleRate));
 
-        for (let i = chunkStart; i < chunkSize; i++) {
-          const wi = waveOffset + (i - chunkStart);
-          if (wi >= waveEnd || wi >= waveform.length) break;
-          chunk[i] += waveform[wi];
-        }
+      for (let i = chunkStart; i < chunkSize; i++) {
+        const wi = waveOffset + (i - chunkStart);
+        if (wi >= waveEnd || wi >= waveform.length) break;
+        chunk[i] += waveform[wi];
       }
     }
 
@@ -1318,9 +1544,7 @@ export class AudioPlaybackService {
     let peak = 0;
     for (let i = 0; i < totalSamples; i++) {
       let sum = 0;
-      if (!this._beatOnlyMode) {
-        for (const v of activeVoices) sum += this._voiceBuffers[v][i];
-      }
+      for (const v of activeVoices) sum += this._voiceBuffers[v][i];
       if (!Number.isFinite(sum)) sum = 0;
       master[i] = sum;
       const abs = sum < 0 ? -sum : sum;
