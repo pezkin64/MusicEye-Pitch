@@ -4,22 +4,16 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  TextInput,
   Alert,
-  ActivityIndicator,
   Platform,
   StatusBar,
   KeyboardAvoidingView,
   ScrollView,
-  Image,
   Modal,
-  Dimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import * as ImagePicker from 'expo-image-picker';
 import { Feather } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
-import { ZemskyEmulatorService } from '../services/ZemskyEmulatorService';
 import { OMRSettings } from '../services/OMRSettings';
 import { OMRCacheService } from '../services/OMRCacheService';
 import { LIGHT_THEME_OPTIONS, getStatusBarStyleForTheme } from '../theme/themes';
@@ -33,16 +27,20 @@ const palette = {
   ink: '#3E3C37',
   inkMuted: '#6E675E',
   accent: '#E05A2A',
-  success: '#5CB85C',
   danger: '#D9534F',
 };
 
 export const SettingsScreen = ({ onNavigateBack, theme, themeId, onThemeChange }) => {
   const [engine, setEngine] = useState(OMRSettings.getEngine());
-  const [fullscreenImage, setFullscreenImage] = useState(null);
+  const [showThemePicker, setShowThemePicker] = useState(false);
+  const [showAboutDetails, setShowAboutDetails] = useState(false);
+  const [showAcknowledgements, setShowAcknowledgements] = useState(false);
   const insets = useSafeAreaInsets();
   const appTheme = { ...palette, ...(theme || {}) };
   const animatedLogoHtml = useMemo(() => buildThemedLogoHtml(appTheme), [appTheme]);
+  const selectedTheme = useMemo(() => {
+    return LIGHT_THEME_OPTIONS.find((opt) => opt.id === themeId) || LIGHT_THEME_OPTIONS[0];
+  }, [themeId]);
 
   React.useEffect(() => {
     OMRSettings.load().then(() => {
@@ -58,7 +56,7 @@ export const SettingsScreen = ({ onNavigateBack, theme, themeId, onThemeChange }
   const handleClearCache = async () => {
     Alert.alert(
       'Clear OMR Cache?',
-      'This will delete all cached OMR scan results. You\'ll need to rescan images, but it will use the latest fixes.',
+      'This will delete all cached OMR scan results. You will need to rescan images, but it will use the latest fixes.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -71,8 +69,8 @@ export const SettingsScreen = ({ onNavigateBack, theme, themeId, onThemeChange }
             } catch (err) {
               Alert.alert('Error', 'Failed to clear cache: ' + (err.message || err));
             }
-          }
-        }
+          },
+        },
       ]
     );
   };
@@ -96,7 +94,7 @@ export const SettingsScreen = ({ onNavigateBack, theme, themeId, onThemeChange }
         ]}
       >
         <TouchableOpacity onPress={onNavigateBack}>
-          <Text style={[styles.linkText, { color: appTheme.inkMuted }]}>← Back</Text>
+          <Text style={[styles.linkText, { color: appTheme.inkMuted }]}>Back</Text>
         </TouchableOpacity>
         <View style={styles.titleRow}>
           <Text style={[styles.title, { color: appTheme.ink }]}>Settings</Text>
@@ -111,7 +109,7 @@ export const SettingsScreen = ({ onNavigateBack, theme, themeId, onThemeChange }
             />
           </View>
         </View>
-        <View style={{ width: 68 }} />
+        <View style={{ width: 48 }} />
       </View>
 
       <ScrollView
@@ -121,7 +119,6 @@ export const SettingsScreen = ({ onNavigateBack, theme, themeId, onThemeChange }
         ]}
         contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}
       >
-        {/* OMR Engine Info */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Feather name="cpu" size={18} color={palette.ink} />
@@ -141,10 +138,8 @@ export const SettingsScreen = ({ onNavigateBack, theme, themeId, onThemeChange }
                   Music eye
                 </Text>
               </View>
-              <Text style={[styles.engineDesc, { color: appTheme.inkMuted }]}>
-                Uses the separate Music eye app to run the native OMR stack.
-              </Text>
-              <Text style={[styles.engineVersion, { color: appTheme.inkMuted }]}>arm64 device • Native runtime</Text>
+              <Text style={[styles.engineDesc, { color: appTheme.inkMuted }]}>Uses the separate Music eye app to run the native OMR stack.</Text>
+              <Text style={[styles.engineVersion, { color: appTheme.inkMuted }]}>arm64 device - Native runtime</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -154,106 +149,157 @@ export const SettingsScreen = ({ onNavigateBack, theme, themeId, onThemeChange }
             <Feather name="droplet" size={18} color={appTheme.ink} />
             <Text style={[styles.sectionTitle, { color: appTheme.ink }]}>Theme Palette</Text>
           </View>
-          <Text style={[styles.sectionDescription, { color: appTheme.inkMuted }]}> 
-            Pick a muted modern palette for the app, including dark and warm options.
-          </Text>
-          <View style={styles.themeGrid}>
-            {LIGHT_THEME_OPTIONS.map((opt) => {
-              const selected = opt.id === themeId;
-              return (
-                <TouchableOpacity
-                  key={opt.id}
-                  style={[
-                    styles.themeCard,
-                    { backgroundColor: opt.colors.surface, borderColor: selected ? opt.colors.accent : opt.colors.border },
-                    selected && styles.themeCardActive,
-                  ]}
-                  onPress={() => onThemeChange && onThemeChange(opt.id)}
-                >
-                  <View style={styles.themeSwatches}>
-                    <View style={[styles.themeSwatch, { backgroundColor: opt.colors.background }]} />
-                    <View style={[styles.themeSwatch, { backgroundColor: opt.colors.surfaceStrong }]} />
-                    <View style={[styles.themeSwatch, { backgroundColor: opt.colors.accent }]} />
-                  </View>
-                  <Text style={[styles.themeName, { color: opt.colors.ink }]}>{opt.name}</Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
+          <Text style={[styles.sectionDescription, { color: appTheme.inkMuted }]}>Pick a muted modern palette for the app.</Text>
+
+          <TouchableOpacity
+            style={[styles.themeDropdownTrigger, { backgroundColor: appTheme.surface, borderColor: appTheme.border }]}
+            onPress={() => setShowThemePicker(true)}
+            activeOpacity={0.85}
+          >
+            <View style={styles.themeDropdownLeft}>
+              <View style={styles.themeSwatchesCompact}>
+                <View style={[styles.themeSwatchCompact, { backgroundColor: selectedTheme?.colors?.background || appTheme.background }]} />
+                <View style={[styles.themeSwatchCompact, { backgroundColor: selectedTheme?.colors?.surfaceStrong || appTheme.surfaceStrong }]} />
+                <View style={[styles.themeSwatchCompact, { backgroundColor: selectedTheme?.colors?.accent || appTheme.accent }]} />
+              </View>
+              <Text style={[styles.themeDropdownText, { color: appTheme.ink }]} numberOfLines={1}>
+                {selectedTheme?.name || 'Select theme'}
+              </Text>
+            </View>
+            <Feather name="chevron-down" size={18} color={appTheme.inkMuted} />
+          </TouchableOpacity>
         </View>
 
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Feather name="smartphone" size={18} color={palette.ink} />
-            <Text style={[styles.sectionTitle, { color: appTheme.ink }]}>Music eye helper</Text>
-          </View>
-          <Text style={[styles.sectionDescription, { color: appTheme.inkMuted }]}>
-            Default endpoint: {ZemskyEmulatorService.getServerUrl()}. Run the Music eye helper app on the same phone, then select Music eye here before scanning.
-          </Text>
-        </View>
-
-        {/* Cache Management */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Feather name="trash-2" size={18} color={palette.ink} />
             <Text style={[styles.sectionTitle, { color: appTheme.ink }]}>Cache Management</Text>
           </View>
-          <Text style={[styles.sectionDescription, { color: appTheme.inkMuted }]}>
-            OMR results are cached to avoid reprocessing. After parser updates, clear the cache to use new fixes.
-          </Text>
+          <Text style={[styles.sectionDescription, { color: appTheme.inkMuted }]}>OMR results are cached to avoid reprocessing. Clear the cache after parser updates.</Text>
           <TouchableOpacity style={[styles.button, styles.dangerButton]} onPress={handleClearCache}>
             <Feather name="trash-2" size={14} color="#fff" />
             <Text style={[styles.buttonText, { color: '#fff' }]}>Clear OMR Cache</Text>
           </TouchableOpacity>
         </View>
 
-        {/* Docker Setup Help */}
         <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Feather name="terminal" size={18} color={palette.ink} />
-            <Text style={styles.sectionTitle}>Quick Setup</Text>
-          </View>
+          <TouchableOpacity
+            style={[styles.collapsibleHeader, { borderColor: appTheme.border, backgroundColor: appTheme.surface }]}
+            onPress={() => setShowAboutDetails((prev) => !prev)}
+            activeOpacity={0.85}
+          >
+            <View style={styles.collapsibleHeaderLeft}>
+              <Feather name="info" size={18} color={palette.ink} />
+              <Text style={[styles.sectionTitle, { color: appTheme.ink }]}>About Music Eye</Text>
+            </View>
+            <Feather name={showAboutDetails ? 'chevron-up' : 'chevron-down'} size={18} color={appTheme.inkMuted} />
+          </TouchableOpacity>
+          {showAboutDetails && (
+            <View style={[styles.collapsibleBody, { borderColor: appTheme.border, backgroundColor: appTheme.surface }]}> 
+              <Text style={[styles.sectionDescription, { color: appTheme.inkMuted }]}>Music Eye scans sheet music and helps you practice by focusing on each vocal part.</Text>
+              <Text style={[styles.aboutList, { color: appTheme.inkMuted }]}> 
+                - Soprano: highest vocal line{"\n"}
+                - Alto: upper-middle vocal line{"\n"}
+                - Tenor: lower-middle vocal line{"\n"}
+                - Bass: lowest vocal line{"\n"}
+                - Use playback voice filters to isolate or combine SATB parts.
+              </Text>
+              <Text style={[styles.aboutEmail, { color: appTheme.inkMuted }]}>Contact: nuffledroid1243@gmail.com</Text>
+            </View>
+          )}
+        </View>
 
-          <Text style={styles.sectionDescription}>
-            Run the Music eye helper app:
-          </Text>
-          <View style={styles.codeBlock}>
-            <Text style={styles.codeText} selectable>
-              open the Music eye helper app{'\n'}
-              ./gradlew installDebug{'\n'}
-              start the helper screen
-            </Text>
-          </View>
+        <View style={styles.section}>
+          <TouchableOpacity
+            style={[styles.collapsibleHeader, { borderColor: appTheme.border, backgroundColor: appTheme.surface }]}
+            onPress={() => setShowAcknowledgements((prev) => !prev)}
+            activeOpacity={0.85}
+          >
+            <View style={styles.collapsibleHeaderLeft}>
+              <Feather name="book-open" size={18} color={palette.ink} />
+              <Text style={[styles.sectionTitle, { color: appTheme.ink }]}>Copyright Information & Acknowledgement</Text>
+            </View>
+            <Feather name={showAcknowledgements ? 'chevron-up' : 'chevron-down'} size={18} color={appTheme.inkMuted} />
+          </TouchableOpacity>
+          {showAcknowledgements && (
+            <View style={[styles.collapsibleBody, { borderColor: appTheme.border, backgroundColor: appTheme.surface }]}> 
+              <Text style={[styles.sectionDescription, { color: appTheme.inkMuted }]}>Open Source Acknowledgements{"\n"}MusicEye is built on the shoulders of these excellent open source projects. We are grateful to their authors and contributors.</Text>
 
-          <Text style={styles.hint}>
-            Music eye uses a separate Android app running on the same phone as NoteScan.
-          </Text>
+              <View style={[styles.ackContainer, { backgroundColor: appTheme.surface, borderColor: appTheme.border }]}> 
+            <Text style={[styles.ackProjectName, { color: appTheme.ink }]}>Leptonica</Text>
+            <Text style={[styles.ackMeta, { color: appTheme.inkMuted }]}>Copyright (c) 2001 Leptonica. All rights reserved.</Text>
+            <Text style={[styles.ackMeta, { color: appTheme.inkMuted }]}>License: BSD 2-Clause</Text>
+            <Text style={[styles.ackMeta, { color: appTheme.inkMuted }]}>Link: http://leptonica.org</Text>
+
+            <Text style={[styles.ackProjectName, { color: appTheme.ink }]}>Tesseract OCR</Text>
+            <Text style={[styles.ackMeta, { color: appTheme.inkMuted }]}>Copyright (c) Tesseract OCR. All rights reserved.</Text>
+            <Text style={[styles.ackMeta, { color: appTheme.inkMuted }]}>License: Apache License, Version 2.0</Text>
+            <Text style={[styles.ackMeta, { color: appTheme.inkMuted }]}>Link: http://www.apache.org/licenses/LICENSE-2.0</Text>
+
+            <Text style={[styles.ackProjectName, { color: appTheme.ink }]}>LAME</Text>
+            <Text style={[styles.ackMeta, { color: appTheme.inkMuted }]}>Copyright (c) The LAME team and contributors.</Text>
+            <Text style={[styles.ackMeta, { color: appTheme.inkMuted }]}>License: LGPL</Text>
+            <Text style={[styles.ackMeta, { color: appTheme.inkMuted }]}>Link: http://lame.sourceforge.net</Text>
+
+            <Text style={[styles.ackProjectName, { color: appTheme.ink }]}>Frugally-Deep</Text>
+            <Text style={[styles.ackMeta, { color: appTheme.inkMuted }]}>Copyright (c) 2021 Tobias Hermann.</Text>
+            <Text style={[styles.ackMeta, { color: appTheme.inkMuted }]}>License: MIT License</Text>
+            <Text style={[styles.ackMeta, { color: appTheme.inkMuted }]}>Link: https://opensource.org/licenses/MIT</Text>
+
+            <Text style={[styles.ackProjectName, { color: appTheme.ink }]}>FunctionalPlus</Text>
+            <Text style={[styles.ackMeta, { color: appTheme.inkMuted }]}>Copyright (c) 2021 Tobias Hermann and the FunctionalPlus contributors.</Text>
+            <Text style={[styles.ackMeta, { color: appTheme.inkMuted }]}>License: Boost Software License, Version 1.0</Text>
+            <Text style={[styles.ackMeta, { color: appTheme.inkMuted }]}>Link: https://www.boost.org/LICENSE_1_0.txt</Text>
+
+            <Text style={[styles.ackProjectName, { color: appTheme.ink }]}>Eigen</Text>
+            <Text style={[styles.ackMeta, { color: appTheme.inkMuted }]}>Copyright (c) 2021 Eigen.</Text>
+            <Text style={[styles.ackMeta, { color: appTheme.inkMuted }]}>License: Mozilla Public License, Version 2.0</Text>
+            <Text style={[styles.ackMeta, { color: appTheme.inkMuted }]}>Link: https://www.mozilla.org/en-US/MPL/2.0/</Text>
+
+            <Text style={[styles.ackProjectName, { color: appTheme.ink }]}>JSON for Modern C++ (Niels Lohmann)</Text>
+            <Text style={[styles.ackMeta, { color: appTheme.inkMuted }]}>Copyright (c) 2013-2021 Niels Lohmann.</Text>
+            <Text style={[styles.ackMeta, { color: appTheme.inkMuted }]}>License: MIT License</Text>
+            <Text style={[styles.ackMeta, { color: appTheme.inkMuted }]}>Link: https://opensource.org/licenses/MIT</Text>
+          </View>
+            </View>
+          )}
         </View>
 
         <View style={{ height: 40 }} />
       </ScrollView>
 
-      {/* Fullscreen image modal */}
       <Modal
-        visible={!!fullscreenImage}
+        visible={showThemePicker}
         transparent={true}
         animationType="fade"
-        onRequestClose={() => setFullscreenImage(null)}
+        onRequestClose={() => setShowThemePicker(false)}
       >
-        <View style={styles.fullscreenOverlay}>
-          <TouchableOpacity
-            style={[styles.fullscreenClose, { top: insets.top + 16, right: insets.right + 20 }]}
-            onPress={() => setFullscreenImage(null)}
-          >
-            <Feather name="x" size={28} color="#fff" />
-          </TouchableOpacity>
-          {fullscreenImage && (
-            <Image
-              source={{ uri: fullscreenImage }}
-              style={styles.fullscreenImage}
-              resizeMode="contain"
-            />
-          )}
+        <View style={styles.themeModalOverlay}>
+          <TouchableOpacity style={styles.themeModalBackdrop} activeOpacity={1} onPress={() => setShowThemePicker(false)} />
+          <View style={[styles.themeModalCard, { backgroundColor: appTheme.surface, borderColor: appTheme.border, marginBottom: insets.bottom + 12 }]}>
+            <Text style={[styles.themeModalTitle, { color: appTheme.ink }]}>Choose Theme</Text>
+            {LIGHT_THEME_OPTIONS.map((opt) => {
+              const selected = opt.id === themeId;
+              return (
+                <TouchableOpacity
+                  key={opt.id}
+                  style={[styles.themeOptionRow, { borderColor: appTheme.border }, selected && { backgroundColor: appTheme.surfaceStrong }]}
+                  onPress={() => {
+                    if (onThemeChange) onThemeChange(opt.id);
+                    setShowThemePicker(false);
+                  }}
+                >
+                  <View style={styles.themeSwatchesCompact}>
+                    <View style={[styles.themeSwatchCompact, { backgroundColor: opt.colors.background }]} />
+                    <View style={[styles.themeSwatchCompact, { backgroundColor: opt.colors.surfaceStrong }]} />
+                    <View style={[styles.themeSwatchCompact, { backgroundColor: opt.colors.accent }]} />
+                  </View>
+                  <Text style={[styles.themeOptionText, { color: appTheme.ink }]}>{opt.name}</Text>
+                  {selected && <Feather name="check" size={16} color={appTheme.accent} />}
+                </TouchableOpacity>
+              );
+            })}
+          </View>
         </View>
       </Modal>
     </KeyboardAvoidingView>
@@ -324,61 +370,95 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     marginBottom: 12,
   },
-  themeGrid: {
-    marginTop: 6,
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-  },
-  themeCard: {
-    width: '48%',
-    borderRadius: 12,
+  collapsibleHeader: {
     borderWidth: 1,
-    padding: 10,
-  },
-  themeCardActive: {
-    borderWidth: 2,
-  },
-  themeSwatches: {
-    flexDirection: 'row',
-    gap: 6,
-    marginBottom: 8,
-  },
-  themeSwatch: {
-    flex: 1,
-    height: 18,
-    borderRadius: 6,
-  },
-  themeName: {
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  label: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: palette.ink,
-    textTransform: 'uppercase',
-    letterSpacing: 0.8,
-    marginBottom: 6,
-  },
-  input: {
-    backgroundColor: palette.surface,
-    borderWidth: 2,
-    borderColor: palette.border,
     borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 15,
-    color: palette.ink,
-    fontWeight: '500',
-    marginBottom: 12,
-  },
-  buttonRow: {
+    minHeight: 46,
+    paddingHorizontal: 12,
     flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  collapsibleHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flex: 1,
+    paddingRight: 10,
+  },
+  collapsibleBody: {
+    marginTop: 8,
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+  },
+  themeDropdownTrigger: {
+    marginTop: 6,
+    borderWidth: 1,
+    borderRadius: 12,
+    minHeight: 46,
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  themeDropdownLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
     gap: 10,
+    paddingRight: 8,
+  },
+  themeDropdownText: {
+    fontSize: 14,
+    fontWeight: '700',
+    flexShrink: 1,
+  },
+  themeSwatchesCompact: {
+    flexDirection: 'row',
+    gap: 4,
+  },
+  themeSwatchCompact: {
+    width: 14,
+    height: 14,
+    borderRadius: 4,
+  },
+  themeModalOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.32)',
+  },
+  themeModalBackdrop: {
+    flex: 1,
+  },
+  themeModalCard: {
+    marginHorizontal: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+    padding: 12,
+  },
+  themeModalTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    marginBottom: 10,
+  },
+  themeOptionRow: {
+    minHeight: 42,
+    borderRadius: 10,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    marginBottom: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  themeOptionText: {
+    flex: 1,
+    marginLeft: 10,
+    fontSize: 14,
+    fontWeight: '600',
   },
   button: {
-    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -390,9 +470,6 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 14,
   },
-  saveButton: {
-    backgroundColor: palette.surfaceStrong,
-  },
   dangerButton: {
     backgroundColor: palette.danger,
     borderColor: palette.danger,
@@ -403,47 +480,6 @@ const styles = StyleSheet.create({
     color: palette.ink,
     textTransform: 'uppercase',
     letterSpacing: 0.6,
-  },
-  resultBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginTop: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 10,
-    borderWidth: 1,
-  },
-  resultOk: {
-    backgroundColor: '#E8F5E9',
-    borderColor: '#C8E6C9',
-  },
-  resultFail: {
-    backgroundColor: '#FFEBEE',
-    borderColor: '#FFCDD2',
-  },
-  resultText: {
-    fontSize: 13,
-    fontWeight: '600',
-    flex: 1,
-  },
-  codeBlock: {
-    backgroundColor: '#2A2925',
-    borderRadius: 10,
-    padding: 14,
-    marginBottom: 10,
-  },
-  codeText: {
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-    fontSize: 12,
-    color: '#F3F1EA',
-    lineHeight: 18,
-  },
-  hint: {
-    fontSize: 12,
-    color: palette.inkMuted,
-    fontStyle: 'italic',
-    marginTop: 4,
   },
   engineRow: {
     flexDirection: 'row',
@@ -507,57 +543,29 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
-  previewLoading: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    marginTop: 12,
-    padding: 14,
-    backgroundColor: '#FFF8F5',
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#FFE0D0',
-  },
-  previewLoadingText: {
+  aboutList: {
     fontSize: 13,
-    color: palette.accent,
-    fontWeight: '600',
+    lineHeight: 19,
+    marginBottom: 8,
   },
-  previewContainer: {
-    marginTop: 14,
+  aboutEmail: {
+    fontSize: 13,
+    fontWeight: '700',
+    lineHeight: 18,
   },
-  previewLabel: {
-    fontSize: 11,
-    fontWeight: '800',
-    color: palette.inkMuted,
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-    marginBottom: 6,
-  },
-  previewImage: {
-    width: '100%',
-    height: 260,
-    backgroundColor: '#F0EDE5',
-    borderRadius: 10,
+  ackContainer: {
     borderWidth: 1,
-    borderColor: palette.border,
+    borderRadius: 12,
+    padding: 12,
+    gap: 4,
   },
-  fullscreenOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.95)',
-    justifyContent: 'center',
-    alignItems: 'center',
+  ackProjectName: {
+    fontSize: 13,
+    fontWeight: '800',
+    marginTop: 8,
   },
-  fullscreenClose: {
-    position: 'absolute',
-    right: 20,
-    zIndex: 10,
-    padding: 8,
-    backgroundColor: 'rgba(255,255,255,0.15)',
-    borderRadius: 20,
-  },
-  fullscreenImage: {
-    width: Dimensions.get('window').width,
-    height: Dimensions.get('window').height * 0.85,
+  ackMeta: {
+    fontSize: 12,
+    lineHeight: 17,
   },
 });
