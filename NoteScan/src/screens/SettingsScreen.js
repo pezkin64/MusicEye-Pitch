@@ -14,7 +14,6 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
-import { OMRSettings } from '../services/OMRSettings';
 import { OMRCacheService } from '../services/OMRCacheService';
 import { LIGHT_THEME_OPTIONS, getStatusBarStyleForTheme } from '../theme/themes';
 import { buildThemedLogoHtml } from '../utils/logoTheme';
@@ -31,7 +30,6 @@ const palette = {
 };
 
 export const SettingsScreen = ({ onNavigateBack, theme, themeId, onThemeChange }) => {
-  const [engine, setEngine] = useState(OMRSettings.getEngine());
   const [showThemePicker, setShowThemePicker] = useState(false);
   const [showAboutDetails, setShowAboutDetails] = useState(false);
   const [showAcknowledgements, setShowAcknowledgements] = useState(false);
@@ -41,17 +39,6 @@ export const SettingsScreen = ({ onNavigateBack, theme, themeId, onThemeChange }
   const selectedTheme = useMemo(() => {
     return LIGHT_THEME_OPTIONS.find((opt) => opt.id === themeId) || LIGHT_THEME_OPTIONS[0];
   }, [themeId]);
-
-  React.useEffect(() => {
-    OMRSettings.load().then(() => {
-      setEngine(OMRSettings.getEngine());
-    });
-  }, []);
-
-  const selectEngine = async (eng) => {
-    await OMRSettings.setEngine(eng);
-    setEngine(eng);
-  };
 
   const handleClearCache = async () => {
     Alert.alert(
@@ -121,31 +108,6 @@ export const SettingsScreen = ({ onNavigateBack, theme, themeId, onThemeChange }
       >
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
-            <Feather name="cpu" size={18} color={palette.ink} />
-            <Text style={[styles.sectionTitle, { color: appTheme.ink }]}>OMR Engine</Text>
-          </View>
-
-          <View style={styles.engineRow}>
-            <TouchableOpacity
-              style={[styles.engineCard, engine === 'zemsky' && styles.engineCardActive]}
-              onPress={() => selectEngine('zemsky')}
-            >
-              <View style={styles.engineHeader}>
-                <View style={[styles.radioOuter, engine === 'zemsky' && styles.radioOuterActive]}>
-                  {engine === 'zemsky' && <View style={styles.radioInner} />}
-                </View>
-                <Text style={[styles.engineName, engine === 'zemsky' && styles.engineNameActive]}>
-                  Music eye
-                </Text>
-              </View>
-              <Text style={[styles.engineDesc, { color: appTheme.inkMuted }]}>Uses the separate Music eye app to run the native OMR stack.</Text>
-              <Text style={[styles.engineVersion, { color: appTheme.inkMuted }]}>arm64 device - Native runtime</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
             <Feather name="droplet" size={18} color={appTheme.ink} />
             <Text style={[styles.sectionTitle, { color: appTheme.ink }]}>Theme Palette</Text>
           </View>
@@ -171,14 +133,9 @@ export const SettingsScreen = ({ onNavigateBack, theme, themeId, onThemeChange }
         </View>
 
         <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Feather name="trash-2" size={18} color={palette.ink} />
-            <Text style={[styles.sectionTitle, { color: appTheme.ink }]}>Cache Management</Text>
-          </View>
-          <Text style={[styles.sectionDescription, { color: appTheme.inkMuted }]}>OMR results are cached to avoid reprocessing. Clear the cache after parser updates.</Text>
           <TouchableOpacity style={[styles.button, styles.dangerButton]} onPress={handleClearCache}>
             <Feather name="trash-2" size={14} color="#fff" />
-            <Text style={[styles.buttonText, { color: '#fff' }]}>Clear OMR Cache</Text>
+            <Text style={[styles.buttonText, { color: '#fff' }]}>Clear Cache</Text>
           </TouchableOpacity>
         </View>
 
@@ -480,68 +437,6 @@ const styles = StyleSheet.create({
     color: palette.ink,
     textTransform: 'uppercase',
     letterSpacing: 0.6,
-  },
-  engineRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 4,
-  },
-  engineCard: {
-    flex: 1,
-    backgroundColor: palette.surface,
-    borderWidth: 2,
-    borderColor: palette.border,
-    borderRadius: 14,
-    padding: 14,
-  },
-  engineCardActive: {
-    borderColor: palette.accent,
-    backgroundColor: '#FFF8F5',
-  },
-  engineHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 6,
-  },
-  radioOuter: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    borderWidth: 2,
-    borderColor: palette.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  radioOuterActive: {
-    borderColor: palette.accent,
-  },
-  radioInner: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: palette.accent,
-  },
-  engineName: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: palette.ink,
-  },
-  engineNameActive: {
-    color: palette.accent,
-  },
-  engineDesc: {
-    fontSize: 12,
-    color: palette.inkMuted,
-    lineHeight: 16,
-    marginBottom: 4,
-  },
-  engineVersion: {
-    fontSize: 10,
-    color: palette.border,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
   },
   aboutList: {
     fontSize: 13,

@@ -91,20 +91,11 @@ export const ScoreInfoPanel = ({ metadata, currentBeat, isPlaying }) => {
     <>
       {/* ──── Compact pill in the transport bar ──── */}
       <TouchableOpacity
-        style={[styles.infoPill, isPlaying && styles.infoPillLive]}
+        style={styles.infoPill}
         onPress={() => setExpanded(true)}
         activeOpacity={0.7}
       >
-        {/* Key + Time inline */}
-        <Text style={styles.inlineKey} numberOfLines={1}>
-          {inlineLabel}
-        </Text>
-
-        {/* Measure:Beat counter */}
-        <View style={styles.mbDivider} />
-        <Text style={[styles.mbText, isPlaying && styles.mbTextLive]}>
-          M{measureNum}:{beatInMeasure}
-        </Text>
+        <Text style={styles.infoSymbol}>i</Text>
       </TouchableOpacity>
 
       {/* ──── Expanded popover modal ──── */}
@@ -191,12 +182,12 @@ export const ScoreInfoPanel = ({ metadata, currentBeat, isPlaying }) => {
 const styles = StyleSheet.create({
   /* ── Compact pill (lives in transport bar) ── */
   infoPill: {
-    flexDirection: 'row',
+    width: 44,
+    height: 44,
     alignItems: 'center',
+    justifyContent: 'center',
     backgroundColor: '#22211E',
-    borderRadius: 18,
-    paddingVertical: 7,
-    paddingHorizontal: 12,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: '#4B463D',
     shadowColor: '#000',
@@ -205,8 +196,11 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 3 },
     elevation: 3,
   },
-  infoPillLive: {
-    borderColor: accent,
+  infoSymbol: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#F5F2EB',
+    lineHeight: 18,
   },
   inlineKey: {
     fontSize: 12,

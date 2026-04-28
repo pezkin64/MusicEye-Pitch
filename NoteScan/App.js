@@ -3,6 +3,7 @@ import { StatusBar, View, Text, TouchableOpacity, Alert, ScrollView } from 'reac
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { HomeScreen } from './src/screens/HomeScreen';
 import { PlaybackScreen } from './src/screens/PlaybackScreen';
 import { SettingsScreen } from './src/screens/SettingsScreen';
@@ -12,6 +13,8 @@ import { LibraryService } from './src/services/LibraryService';
 import { ThemeSettings } from './src/services/ThemeSettings';
 import { getThemeById, getStatusBarStyleForTheme } from './src/theme/themes';
 
+const CAMERA_TIPS_ENABLED_KEY = 'camera_tips_enabled_v1';
+
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState('home');
   const [playbackImageUri, setPlaybackImageUri] = useState(null);
@@ -19,6 +22,7 @@ export default function App() {
   const [playbackScoreEntry, setPlaybackScoreEntry] = useState(null);
   const [homeGoForward, setHomeGoForward] = useState(null);
   const [themeId, setThemeId] = useState(ThemeSettings.getThemeId());
+  const [cameraTipsEnabled, setCameraTipsEnabled] = useState(true);
   const goForwardTimerRef = useRef(null);
 
   const activeTheme = getThemeById(themeId);
@@ -28,6 +32,14 @@ export default function App() {
   useEffect(() => {
     OMRSettings.load();
     LibraryService.load();
+    AsyncStorage.getItem(CAMERA_TIPS_ENABLED_KEY)
+      .then((value) => {
+        if (value === 'false') {
+          setCameraTipsEnabled(false);
+        }
+      })
+      .catch(() => {});
+
     ThemeSettings.load().then((loadedTheme) => {
       if (loadedTheme?.id) {
         setThemeId(loadedTheme.id);
@@ -108,8 +120,40 @@ export default function App() {
     }
   };
 
+  const showCameraTipsPrompt = async () => {
+    if (!cameraTipsEnabled) {
+      return true;
+    }
+
+    return new Promise((resolve) => {
+      Alert.alert(
+        'Camera Tips',
+        'For best scan quality:\n\n• Keep the sheet flat and fully in frame\n• Use bright, even lighting\n• Avoid shadows, glare, and blur\n• Capture one page at a time',
+        [
+          { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+          {
+            text: "Continue & Don't Show Again",
+            onPress: async () => {
+              setCameraTipsEnabled(false);
+              try {
+                await AsyncStorage.setItem(CAMERA_TIPS_ENABLED_KEY, 'false');
+              } catch (_) {}
+              resolve(true);
+            },
+          },
+          { text: 'Continue', onPress: () => resolve(true) },
+        ]
+      );
+    });
+  };
+
   const pickImageFromCamera = async () => {
     try {
+      const shouldContinue = await showCameraTipsPrompt();
+      if (!shouldContinue) {
+        return;
+      }
+
       const permissionResult = await ImagePicker.requestCameraPermissionsAsync();
 
       if (!permissionResult.granted) {
@@ -150,7 +194,7 @@ export default function App() {
   const pickImageFromFiles = async () => {
     try {
       const result = await DocumentPicker.getDocumentAsync({
-        type: ['image/png', 'image/jpeg', 'image/jpg'],
+        type: ['image/png', 'image/jpeg', 'image/jpg', 'application/pdf'],
         copyToCacheDirectory: true,
         multiple: false,
       });
@@ -162,16 +206,18 @@ export default function App() {
       const asset = result.assets[0];
       const mime = String(asset.mimeType || '').toLowerCase();
       const name = String(asset.name || '').toLowerCase();
-      const isSupportedImage =
+      const isSupportedFile =
         mime === 'image/png' ||
         mime === 'image/jpeg' ||
         mime === 'image/jpg' ||
+        mime === 'application/pdf' ||
         name.endsWith('.png') ||
         name.endsWith('.jpg') ||
-        name.endsWith('.jpeg');
+        name.endsWith('.jpeg') ||
+        name.endsWith('.pdf');
 
-      if (!isSupportedImage) {
-        Alert.alert('Unsupported File Type', 'Please select a PNG or JPEG image.');
+      if (!isSupportedFile) {
+        Alert.alert('Unsupported File Type', 'Please select PNG, JPEG, or PDF.');
         return;
       }
 
@@ -276,8 +322,8 @@ export default function App() {
               </Text>
               <Text style={{ fontSize: 14, color: theme.inkMuted, lineHeight: 21, marginBottom: 16 }}>
                 • Tap Scan from Files on Home.{"\n"}
-                • Select PNG or JPEG for direct scanning.{"\n"}
-                • If your file is PDF, convert each page to image first.{"\n"}
+                • Select PNG, JPEG, or PDF for direct scanning.{"\n"}
+                • For PDF files, use clear single-page sheet scans when possible.{"\n"}
                 • Import one page at a time for the cleanest read.
               </Text>
 

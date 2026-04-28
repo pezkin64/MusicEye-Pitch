@@ -1909,9 +1909,6 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
               size={14}
               color={isPaused && !isPlaying ? barPalette.accent : barPalette.barText}
             />
-            <Text style={styles.playPillText}>
-              {(preparing || playPending) ? 'Preparing...' : isPlaying ? 'Pause' : isPaused ? 'Resume' : 'Play'}
-            </Text>
           </Pressable>
 
           {/* Stop */}
@@ -1926,6 +1923,13 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
           >
             <Feather name="sliders" size={14} color={showAudioControls ? barPalette.accent : barPalette.barText} />
           </Pressable>
+
+          {/* Score info button (compact symbol) */}
+          <ScoreInfoPanel
+            metadata={scoreData.metadata}
+            currentBeat={currentBeat}
+            isPlaying={isPlaying}
+          />
 
           {/* Instrument selector */}
           {availablePresets.length > 0 && (
@@ -1952,13 +1956,6 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
           >
             <Feather name="more-horizontal" size={15} color={barPalette.barText} />
           </Pressable>
-
-          {/* Score info button (compact pill) */}
-          <ScoreInfoPanel
-            metadata={scoreData.metadata}
-            currentBeat={currentBeat}
-            isPlaying={isPlaying}
-          />
         </ScrollView>
       </View>
 
@@ -1966,11 +1963,14 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
       <Modal
         visible={showOverflowMenu}
         transparent
-        animationType="fade"
+        animationType="slide"
         onRequestClose={() => setShowOverflowMenu(false)}
       >
         <View style={styles.modalOverlay}>
           <View style={[styles.modalContent, { paddingBottom: insets.bottom + 12, backgroundColor: theme.background }]}> 
+            <View style={styles.sheetHandleWrap}>
+              <View style={styles.sheetHandle} />
+            </View>
             <View style={[styles.modalHeader, { borderBottomColor: theme.border }]}> 
               <Text style={[styles.modalTitle, { color: theme.ink }]}>More Controls</Text>
               <TouchableOpacity onPress={() => setShowOverflowMenu(false)}>
@@ -1979,17 +1979,6 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
             </View>
 
             <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.overflowActionsList}>
-              <Pressable
-                style={({ pressed }) => [styles.overflowActionRow, { borderBottomColor: theme.border, backgroundColor: pressed ? theme.surfaceStrong : 'transparent' }]}
-                onPress={() => {
-                  setShowOverflowMenu(false);
-                  handleExportMusicXml();
-                }}
-              >
-                <Feather name="download" size={14} color={theme.inkMuted} />
-                <Text style={[styles.overflowActionText, { color: theme.ink }]}>Export XML</Text>
-              </Pressable>
-
               <Pressable
                 style={({ pressed }) => [styles.overflowActionRow, { borderBottomColor: theme.border, backgroundColor: pressed ? theme.surfaceStrong : 'transparent' }]}
                 onPress={() => {
@@ -2175,6 +2164,9 @@ export const PlaybackScreen = ({ imageUri, scoreData: incomingScoreData, scoreEn
       >
         <View style={styles.modalOverlay}>
           <View style={[styles.modalContent, { paddingBottom: insets.bottom + 16 }]}>
+            <View style={styles.sheetHandleWrap}>
+              <View style={styles.sheetHandle} />
+            </View>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Select Instrument</Text>
               <TouchableOpacity onPress={() => setShowInstrumentPicker(false)}>
@@ -2486,13 +2478,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
   },
   playPill: {
-    flexDirection: 'row',
+    width: 44,
+    height: 44,
+    borderRadius: 14,
     alignItems: 'center',
-    gap: 8,
+    justifyContent: 'center',
     backgroundColor: barPalette.barRaised,
-    borderRadius: 18,
-    paddingVertical: 11,
-    paddingHorizontal: 16,
     borderWidth: 1,
     borderColor: barPalette.barBorder,
   },
@@ -2500,7 +2491,6 @@ const styles = StyleSheet.create({
     borderColor: barPalette.accent,
     backgroundColor: '#332015',
   },
-  playPillText: { color: barPalette.barText, fontSize: 12, fontWeight: '700' },
   zoomPill: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2567,14 +2557,33 @@ const styles = StyleSheet.create({
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
+    backgroundColor: 'transparent',
     justifyContent: 'flex-end',
+    paddingHorizontal: 10,
+    paddingBottom: 8,
   },
   modalContent: {
     backgroundColor: palette.background,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    maxHeight: '60%',
+    borderRadius: 22,
+    maxHeight: '72%',
+    borderWidth: 1,
+    borderColor: '#D7D0C2',
+    shadowColor: '#000',
+    shadowOpacity: 0.22,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 12,
+  },
+  sheetHandleWrap: {
+    alignItems: 'center',
+    paddingTop: 10,
+    paddingBottom: 4,
+  },
+  sheetHandle: {
+    width: 46,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: '#D1C9BA',
   },
   modalHeader: {
     flexDirection: 'row',

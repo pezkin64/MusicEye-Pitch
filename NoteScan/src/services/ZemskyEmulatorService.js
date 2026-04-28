@@ -161,10 +161,11 @@ class ZemskyEmulatorServiceClass {
     }
 
     const fileName = imageUri.split('/').pop() || 'sheet_music.jpg';
-    const ext = fileName.split('.').pop().toLowerCase();
+    const ext = (fileName.split('.').pop() || '').toLowerCase();
     const mimeType =
       ext === 'png' ? 'image/png'
       : (ext === 'jpg' || ext === 'jpeg') ? 'image/jpeg'
+      : ext === 'pdf' ? 'application/pdf'
       : (ext === 'heic' || ext === 'heif') ? 'image/heic'
       : ext === 'webp' ? 'image/webp'
       : 'image/jpeg';
